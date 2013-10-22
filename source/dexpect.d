@@ -77,6 +77,10 @@ version(Posix){
             return -1; // should never get here.
         }
 
+        /**
+          * Method waiting until string toExpect is found on the output of the spawned process.
+          * Throws an exception if waiting for longer than timeout seconds.
+          */
         public void expect(string toExpect, int timeout){
             import std.regex;
             import std.datetime;
@@ -86,30 +90,34 @@ version(Posix){
             // 1 hn second = 1 000 000 000/100 = 10000000
             auto startTime = Clock.currTime();
             auto endTime = startTime + dur!("seconds")(timeout);
-            writefln("Starttime: %s\nEndtime: %s", startTime, endTime);
+            //writefln("Starttime: %s\nEndtime: %s", startTime, endTime);
             do{
                 DataPacket data = readData(_master);
                 if(data.exitCode == -1) 
                     continue;
                 string strData = cast(string)data.data;
-                writefln("strData is: %s", strData);
+                //writefln("strData is: %s", strData);
                 auto befLength = this.before.length;
                 this.before ~= strData;
                 
                 if(match(before, toExpect)){
                     // we found a match!
-                    writefln("Found a match!");
+                    //writefln("Found a match!");
                     import std.array : split, join;
                     before = before[0..befLength];
                     before ~= strData.split(toExpect)[0] ~= toExpect;
                     after = strData.split(toExpect)[1..$].join(toExpect);
-                    writefln("Array: %s", strData.split(toExpect));
+                    //writefln("Array: %s", strData.split(toExpect));
                     return;
                 }
             } while(endTime > Clock.currTime());
             // if it gets to here, throw an exception
             throw new Exception(format("Error finding: \"%s\" in %s", toExpect, this.before));
         }
+        /**
+          * Method waiting until string toExpect is found on the output of the spawned process.
+          * Throws an exception if waiting for this Spawn objects timeout property in seconds.
+          */
         public void expect(string toExpect){
             expect(toExpect, this._timeout);
         }
@@ -118,7 +126,8 @@ version(Posix){
           * Sends a line to the spawned process with \n concatenated on the end.
           */
         public void sendLine(string line){
-            line ~= "\n";
+            if(line[$-1] != '\n')
+                line ~= "\n";
             sendData(_master, cast(const(void)[])line);
         }
 
@@ -145,8 +154,6 @@ version(Posix){
 
     /**
       * Sends data in the data[] over to spawned process.
-      * :q
-
       */
     private void sendData(int fp, const(void)[] data){
         import core.sys.posix.unistd;
