@@ -3,6 +3,8 @@ D Implementation of the Expect framework (http://expect.sourceforge.net/)
 Currently *nix only, though will look into writing it for windows aswell.
 
 TODOs:
+-> Currently, user is required to execute the shell before any other commands. This should be done by default if the user doesnt specify.
+Will use the $SHELL env variable.
 
 -> The Before and After properties dont behave very well. Need to implement a fix to these.
 
