@@ -2,7 +2,7 @@
 	"name": "dexpect",
 	"description": "A D implementation of the expect tool.",
 	"homepage": "http://github.com/grogancolin/dexpect",
-	"copyright": "None!",
+    "license" : "Boost",
 	"authors": [
 		"Colin Grogan"
 	],
