@@ -1,14 +1,5 @@
 module dexpect;
 
-/+
-Module contains a D implementation of the expect tool.
-A small how to:
-auto s = spawn("/bin/bash");
-s.expect("$");
-s.sendLine("ls -l");
-s.expect("$");
-writefln("Before: %s\nAfter: %s", s.before, s.after);
-+/
 version(Posix):
 import std.string;
 import std.stdio;
@@ -18,7 +9,7 @@ import std.process : environment;
 import std.exception;
 
 // link to external C function in util lib to fork a pseudo terminal
-//pragma(lib, "util"); // pragma does not work for me at moment. TODO: FIND OUT WHY!
+// pragma(lib, "util"); // pragma does not work for me at moment. TODO: FIND OUT WHY!
 extern(C) static int forkpty(int* master, char* name, void* termp, void* winp);
 extern(C) static char* ttyname(int fd);
 
