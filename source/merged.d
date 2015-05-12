@@ -88,7 +88,6 @@ public class Expect2{
 			import std.stdio;
 			writefln("Sending %s", command);
 			this.inWritePipe.writeData(command);
-			writefln("Finished sending");
 		}
 	}
 	/// Reads the next toRead of data
@@ -99,22 +98,24 @@ public class Expect2{
 				this.allData ~= data.idup;
 		}
 		version(Windows){
-			overlapped.Offset = allData.length;
-			if(ReadFileEx(this.outReadPipe, overlappedBuffer.ptr, overlappedBuffer.length, &overlapped, cast(void*)&readData) == 0){
+			OVERLAPPED ov;
+			ov.Offset = allData.length;
+			if(ReadFileEx(this.outReadPipe, overlappedBuffer.ptr, overlappedBuffer.length, &ov, cast(void*)&readData) == 0){
 				if(GetLastError == 997) throw new ExpectException("Pending io");
 				else {}
 			}
-			allData ~= "@" ~ (cast(char*)overlappedBuffer).fromStringz ~ "@";
+			allData ~= (cast(char*)overlappedBuffer).fromStringz;
+			overlappedBuffer.destroy;
+			Thread.sleep(100.msecs);
 		}
 	}
 	/// Reads all available data. Ends when subsequent reads dont increase length of allData
 	public void readAllAvailable(){
 		auto len = allData.length;
-		auto tmp = len;
 		while(true){
 			readNextChunk;
-			if(tmp == allData.length) break;
-			tmp = allData.length;
+			if(len == allData.length) break;
+			len = allData.length;
 		}
 	}
 

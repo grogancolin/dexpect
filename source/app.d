@@ -1,4 +1,5 @@
 import dexpect;
+import merged;
 import std.stdio;
 import std.algorithm;
 import core.sys.posix.unistd;
@@ -7,9 +8,13 @@ import std.process;
 import core.thread;
 void main(string[] args){
 
-        auto expect = new Expect("/usr/bin/python", ["/usr/bin/python"]);
-        expect.expect(">");
-        expect.sendLine("1+1");
-        expect.expect("2");
-        writefln("Woop!");
+	auto e = new Expect2("cmd.exe");
+	e.readNextChunk;
+	writefln("Data: %s", e.data);
+	e.expect("reserved.");
+	e.sendLine("ipconfig");
+
+	Thread.sleep(50.msecs);
+	e.readNextChunk;
+	writefln("New Data: %s", e.data);
 }
