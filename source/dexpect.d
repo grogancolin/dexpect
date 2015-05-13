@@ -31,109 +31,164 @@ License:
         ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
         DEALINGS IN THE SOFTWARE.
 +/
-
 module dexpect;
+
+import std.conv : to;
 import std.string;
+import core.thread : Thread, sleep, Duration, msecs;
+import std.datetime : Clock;
+import std.algorithm : canFind;
+import std.path : isAbsolute;
 import std.stdio;
-import std.datetime;
-import std.algorithm;
-import std.process;
-import std.exception;
 
-
-version(Posix){
-
-
-// link to external C function in util lib to fork a pseudo terminal
-// pragma(lib, "util"); // pragma does not work for me at moment. TODO: FIND OUT WHY!
-extern(C) static int forkpty(int* master, char* name, void* termp, void* winp);
-extern(C) static char* ttyname(int fd);
-
-/// The buffer size for reads from pty.
-const int toRead = 1024;
-
-/**
-  * Class that encapsulates functionality to expect data on a pty session.
-  * It's constructor sets up a pty and spawns the program on it.
-  * Expect an output with expect() function
-  *
-  */
-class Expect{
-	/// The spawned pty this session interacts with
-	private Pty pty;
-	/// All data read from pty
-	private string allData;
-	/// The index in allData where the last succesful expect was found
-	private long indexLastExpect;
+version(ExpectMain){
+	import docopt;
+	const string doc =
+"dexpect
+Usage:
+    dexpect [-h] <file>
+Options:
+    -h --help    Show this message
+";
+	string[string] customVariables;
+	int main(string[] args){
+		auto arguments = docopt.docopt(doc, args[1..$], true, "dexpect 0.0.1");
+		writeln(arguments);
+		File expectScript = File(arguments["<file>"].toString, "r");
+		Expect expect;
+		foreach(ref line; expectScript.byLine){
+			line.strip;
+			switch(line.startsWith("set", "spawn", "expect", "send", "print")){
+				case 1:
+					if(!line.canFind("=")) throw new ExpectException("Parsing error");
+					auto equalsIdx = line.indexOf("=");
+					string name = line[4..equalsIdx].idup;
+					string value = line[equalsIdx+1..$].idup;
+					customVariables[name] = value;
+					break;
+				case 2:
+					string cmd = line[6..$].idup;
+					string[] cmdArgs;
+					if(cmd.canFind(" ")){
+						cmdArgs = cmd[cmd.indexOf(" ")..$].idup.split(" ");
+						cmd = cmd[0..cmd.indexOf(" ")];
+					}
+					expect = new Expect(cmd, cmdArgs);
+					break;
+				case 3:
+					assert(expect !is null, "Error, must spawn before expect");
+					string toExpect = line[7..$].idup;
+					expect.expect(toExpect);
+					break;
+				case 4:
+					assert(expect !is null, "Error, must spawn before sending data");
+					expect.sendLine(line[5..$].idup);
+					break;
+				case 5:
+					if(line == "print all")
+						expect.readAllAvailable;
+					else expect.read;
+					writefln("All data:\n%s", expect.data);
+					break;
+				default: writefln("Parsing error"); return 1;
+			}
+		}
+		return 0;
+	}
+}
+/// Expect spawns a process in a Spawn object.
+/// You then call expect("desired output"); sendLine("desired Input");
+/// to interact with said process
+public class Expect{
 	/// Amount of time to wait before ending expect call.
 	private Duration _timeout=5000.msecs;
 
-	/// Constructs an Expect that runs cmd
+	/// The index in allData where the last succesful expect was found
+	private size_t indexLastExpect;
+
+	/// The spawn object. Platform dependant. See $Spawn
+	private Spawn spawn;
+
+	/// String containing the last string expect function was called on
+	private string lastExpect;
+
+	/// Constructs an Expect that runs cmd with no args
 	this(string cmd){
 		this(cmd, []);
 	}
 	/// Constructs an Expect that runs cmd with args
+	/// On linux, this passes the args with cmd on front if required
+	/// On windows, it passes the args as a single string seperated by spaces
 	this(string cmd, string[] args){
-		import std.path;
-
-		string firstArg = constructPathToExe(cmd);
-		if(args.length == 0 || args[0] != firstArg)
-			args = [firstArg] ~ args;
-
-		this.pty = spawnProcessInPty(cmd, args);
+		this.spawn.spawn(cmd, args);
 	}
 
-	/// Expects toExpect in output of spawn within default timeout
-	public void expect(string toExpect){
+	/// Calls the spawns cleanup routine.
+	~this(){
+		this.spawn.cleanup();
+	}
+
+	/// Expects toExpect in output of spawn within Spawns timeout
+	public int expect(string toExpect){
 		return expect(toExpect, this.timeout);
 	}
 
 	/// Expects toExpect in output of spawn within custom timeout
-	public void expect(string toExpect, Duration timeout){
+	public int expect(string toExpect, Duration timeout){
+		this.lastExpect = toExpect;
+		writefln("Waiting for %s", toExpect);
+		Thread.sleep(50.msecs);
 		auto startTime = Clock.currTime;
+		auto timeLastPrintedMessage = Clock.currTime;
 		while(Clock.currTime < startTime + timeout){
-			this.readNextChunk;
-			if(allData[indexLastExpect..$].canFind(toExpect)){
-				indexLastExpect = allData.lastIndexOf(toExpect);
-				return;
+			this.spawn.readNextChunk;
+			// gives a status update to the user. Takes longer than the default timeout,
+			// so usually you wont see it
+			if(Clock.currTime >= timeLastPrintedMessage + 5100.msecs){
+				string update = this.data.length > 50 ? this.data[$-50..$] : this.data;
+				writefln("Last %s chars of data: %s", update.length, update.strip);
+				timeLastPrintedMessage = Clock.currTime;
+			}
+			// check if we finally have what we want in the output, if so, return
+			if(this.spawn.allData[indexLastExpect..$].canFind(toExpect)){
+				indexLastExpect = this.spawn.allData.lastIndexOf(toExpect);
+				return true;
 			}
 		}
-		throw new ExpectException(format("Timed out expecting %s",toExpect));
+		throw new ExpectException(format("Timed out expecting %s in %s",toExpect, this.data));
 	}
 
 	/// Sends a line to the pty. Ensures it ends with newline
 	public void sendLine(string command){
-		if(command[$-1]!='\n')
-			send(command ~ '\n');
+		if(command.length == 0 || command[$-1] != '\n')
+			this.send(command ~ '\n');
 		else
-			send(command);
+			this.send(command);
 	}
-
 	/// Sends command to the pty
 	public void send(string command){
-		this.pty.sendToPty(command);
+		writef("Sending: %s", command);
+		this.spawn.sendData(command);
 	}
-	/// Reads the next toRead of data
-	private void readNextChunk(){
-		auto data = this.pty.readFromPty();
-		if(data.length > 0)
-			this.allData ~= data.idup;
+	/// Reads data from the spawn
+	/// This function will sleep for timeToWait' Duration if nothing was read first time
+	/// timeToWait is 50.msecs by default
+	public void read(Duration timeToWait=150.msecs){
+		auto len = this.data.length;
+		this.spawn.readNextChunk;
+		if(len == this.data.length){
+			Thread.sleep(timeToWait);
+			this.spawn.readNextChunk;
+		}
 	}
 	/// Reads all available data. Ends when subsequent reads dont increase length of allData
 	public void readAllAvailable(){
-		auto len = allData.length;
-		auto tmp = len;
+		auto len = this.spawn.allData.length;
 		while(true){
-			readNextChunk;
-			if(tmp == allData.length) break;
-			tmp = allData.length;
+			this.read;
+			if(len == this.spawn.allData.length) break;
+			len = this.spawn.allData.length;
 		}
-	}
-
-	/// Prints all the output to stdout
-	public void printAllOutput(){
-			readAllAvailable;
-			writefln("%s", allData);
 	}
 
 	/// Sets the default timeout
@@ -143,174 +198,178 @@ class Expect{
 	/// Returns the timeout
 	@property auto timeout(){ return this._timeout; }
 	/// Returns all data before the last succesfull expect
-	@property string before(){ return this.allData[0..indexLastExpect]; }
+	@property string before(){ return this.spawn.allData[0..indexLastExpect]; }
 	/// Reads and then returns all data after the last succesfull expect. WARNING: May block if spawn is constantly writing data
-	@property string after(){ readAllAvailable; return this.allData[indexLastExpect..$]; }
+	@property string after(){ readAllAvailable; return this.spawn.allData[indexLastExpect..$]; }
+	@property string data(){ return this.spawn.allData; }
 }
 
-/**
-  * A data structure to hold information on a Pty session
-  * Holds its fd and a utility property to get its name
-  */
-public struct Pty{
-	int fd;
-	@property string name(){ return ttyname(fd).fromStringz.idup; };
-}
-
-/**
-  * Sets the Pty session to non-blocking mode
-  */
-void setNonBlocking(Pty pty){
-	import core.sys.posix.unistd;
-	import core.sys.posix.fcntl;
-	int currFlags = fcntl(pty.fd, F_GETFL, 0) | O_NONBLOCK;
-	fcntl(pty.fd, F_SETFL, currFlags);
-}
-
-/**
-  * Spawns a process in a pty session
-  * By convention the first arg in args should be == program
-  */
-public Pty spawnProcessInPty(string program, string[] args)
-{
-	import core.sys.posix.unistd;
-	import core.sys.posix.fcntl;
-	import core.thread;
-	Pty master;
-	int pid = forkpty(&(master).fd, null, null, null);
-	assert(pid != -1, "Error forking pty");
-	if(pid==0){ //child
-		execl(program.toStringz,
-			args.length > 0 ? args.join(" ").toStringz : null , null);
+/// Holds information on how to spawn off subprocesses
+/// On Linux systems, it uses forkpty
+/// On Windows systems, it uses OVERLAPPED io on named pipes
+struct Spawn{
+	string allData;
+	version(Posix){
+		private Pty pty;
 	}
-	else{ // master
-		int currFlags = fcntl(master.fd, F_GETFL, 0);
-		currFlags |= O_NONBLOCK;
-		fcntl(master.fd, F_SETFL, currFlags);
-		Thread.sleep(100.msecs);
-		return master;
+	version(Windows){
+		HANDLE inWritePipe;
+		HANDLE outReadPipe;
+		OVERLAPPED overlapped;
+		ubyte[4096] overlappedBuffer;
 	}
-	return Pty(-1);
-}
 
-/**
-  * Sends a string to a pty.
-  */
-void sendToPty(Pty pty, string data){
-	import core.sys.posix.unistd;
-	const(void)[] rawData = cast(const(void)[]) data;
-	while(rawData.length){
-		long sent = write(pty.fd, rawData.ptr, rawData.length);
-		if(sent < 0)
-			throw new Exception(format("Error writing to %s", pty.name));
-		rawData = rawData[sent..$];
+	void spawn(string cmd){
+		this.spawn(cmd, []);
 	}
-}
-
-/**
-  * Reads from a pty session
-  * Returns the string that was read
-  */
-string readFromPty(Pty pty){
-	import core.sys.posix.unistd;
-	import std.conv : to;
-	ubyte[toRead] buf;
-	immutable long len = read(pty.fd, buf.ptr, toRead);
-	if(len >= 0){
-		return cast(string)(buf[0..len]);
-	}
-	return "";
-}
-
-
-/**
-  * Searches all dirs on path for exe if required,
-  * or simply calls it if it's a relative or absolute path
-  */
-string constructPathToExe(string exe){
-    import std.path;
-    import std.algorithm;
-    import std.file : exists;
-    // if it already has a / or . at the start, assume the exe is correct
-    if(exe[0]=='/' || exe[0]=='.') return exe;
-    auto matches = environment["PATH"].split(pathSeparator)
-        .map!(path => path~"/"~exe)
-        .filter!(path => path.exists);
-    return matches.empty ? exe : matches.front;
-}
-unittest{
-    assert("sh".constructPathToExe == "/bin/sh");
-    assert("./myexe".constructPathToExe == "./myexe");
-    assert("/myexe".constructPathToExe == "/myexe");
-}
-}
-
-version(Windows){
-	import core.sys.windows.windows;
-	import std.conv;
-
-	class Expect{
-		private{
-			string allData;
-			uint indexLastExpect;
-			HANDLE inWritePipe;
-			HANDLE outReadPipe;
-			OVERLAPPED overlapped;
-			ubyte[4096] overlappedBuffer;
-
+	void spawn(string cmd, string[] args){
+		version(Posix){
+			import std.path;
+			string firstArg = constructPathToExe(cmd);
+			if(args.length == 0 || args[0] != firstArg)
+				args = [firstArg] ~ args;
+			this.pty = spawnProcessInPty(cmd, args);
 		}
-		this(){
-			auto pipes = startChild("C:\\Windows\\System32\\cmd.exe", "C:\\Windows\\System32\\cmd.exe");
+		version(Windows){ // FIXME the constructing path to exe here is broken
+			              // what happens when you send a relative path to this function? it breaks.
+			string fqp = cmd;
+			if(!cmd.isAbsolute)
+				fqp = cmd.constructPathToExe;
+			auto pipes = startChild(fqp, ([fqp] ~ args).join(" "));
 			this.inWritePipe = pipes.inwritepipe;
 			this.outReadPipe = pipes.outreadpipe;
 			overlapped.hEvent = overlappedBuffer.ptr;
-			import core.thread;
 			Thread.sleep(100.msecs); // need to give the pipes a moment to connect
 		}
-		~this(){
-			CloseHandle(inWritePipe);
-			CloseHandle(outReadPipe);
+	}
+	/// On windows, calls CloseHandle on the io handles Spawn uses
+	/// Does nothing on linux as linux automatically closes resources when parent dies
+	void cleanup(){
+		version(Windows){
+			CloseHandle(this.inWritePipe);
+			CloseHandle(this.outReadPipe);
 		}
-		public void readNextChunk(){
-			if(ReadFileEx(this.outReadPipe, overlappedBuffer.ptr, overlappedBuffer.length, &overlapped, cast(void*)&readData) == 0){
-				if(GetLastError == 997) writefln("Pending io");
-				else {}
-			}
-			allData ~= (cast(char*)overlappedBuffer).fromStringz;
+	}
+	/// Sends command to the pty
+	public void sendData(string command){
+		version(Posix){
+			this.pty.sendToPty(command);
 		}
-		extern(Windows) private void readData(DWORD errorCode, DWORD numberOfBytes, OVERLAPPED* overlapped){
-			File f = File("C:\\t.txt", "w");
-			f.writefln("Raw read");
-			auto data = (cast(ubyte*) overlapped.hEvent)[0 .. numberOfBytes];
-			f.writefln("Received: %s", cast(string)data);
-			f.flush();
+		version(Windows){
+			this.inWritePipe.writeData(command);
 		}
-		@property auto data(){ return allData; }
-
-		/// Expects toExpect in output of spawn within custom timeout
-		public void expect(string toExpect){
-			return expect(toExpect, 5000.msecs);
+	}
+	/// Returns the next toRead of data as a string
+	public void readNextChunk(){
+		version(Posix){
+			auto data = this.pty.readFromPty();
+			import std.stdio;
+			if(data.length > 0)
+				allData ~= data.idup;
 		}
-
-		/// Expects toExpect in output of spawn within custom timeout
-		public void expect(string toExpect, Duration timeout){
-			auto startTime = Clock.currTime;
-			while(Clock.currTime < startTime + timeout){
-				this.readNextChunk;
-				if(allData[indexLastExpect..$].canFind(toExpect)){
-					indexLastExpect = allData.lastIndexOf(toExpect);
-					return;
+		version(Windows){
+			OVERLAPPED ov;
+			ov.Offset = allData.length;
+			if(ReadFileEx(this.outReadPipe, overlappedBuffer.ptr, overlappedBuffer.length, &ov, cast(void*)&readData) == 0){
+				if(GetLastError == 997)
+					throw new ExpectException("readNextChunk - pending io");
+				else {
+				// may need to handle other errors here
+				// TODO: Investigate
 				}
 			}
-			throw new ExpectException(format("Timed out expecting %s",toExpect));
+			allData ~= (cast(char*)overlappedBuffer).fromStringz;
+			overlappedBuffer.destroy;
+			Thread.sleep(100.msecs);
 		}
+	}
+}
 
+version(Posix){
+	extern(C) static int forkpty(int* master, char* name, void* termp, void* winp);
+	extern(C) static char* ttyname(int fd);
+
+	const toRead = 4096;
+  /**
+  * A data structure to hold information on a Pty session
+  * Holds its fd and a utility property to get its name
+  */
+	public struct Pty{
+		int fd;
+		@property string name(){ return ttyname(fd).fromStringz.idup; };
 	}
 
+	/**
+  * Sets the Pty session to non-blocking mode
+  */
+	void setNonBlocking(Pty pty){
+		import core.sys.posix.unistd;
+		import core.sys.posix.fcntl;
+		int currFlags = fcntl(pty.fd, F_GETFL, 0) | O_NONBLOCK;
+		fcntl(pty.fd, F_SETFL, currFlags);
+	}
+
+	/**
+  * Spawns a process in a pty session
+  * By convention the first arg in args should be == program
+  */
+	public Pty spawnProcessInPty(string program, string[] args)
+	{
+		import core.sys.posix.unistd;
+		import core.sys.posix.fcntl;
+		import core.thread;
+		Pty master;
+		int pid = forkpty(&(master).fd, null, null, null);
+		assert(pid != -1, "Error forking pty");
+		if(pid==0){ //child
+			execl(program.toStringz,
+				args.length > 0 ? args.join(" ").toStringz : null , null);
+		}
+		else{ // master
+			int currFlags = fcntl(master.fd, F_GETFL, 0);
+			currFlags |= O_NONBLOCK;
+			fcntl(master.fd, F_SETFL, currFlags);
+			Thread.sleep(100.msecs); // slow down the main thread to give the child a chance to write something
+			return master;
+		}
+		return Pty(-1);
+	}
+
+	/**
+  * Sends a string to a pty.
+  */
+	void sendToPty(Pty pty, string data){
+		import core.sys.posix.unistd;
+		const(void)[] rawData = cast(const(void)[]) data;
+		while(rawData.length){
+			long sent = write(pty.fd, rawData.ptr, rawData.length);
+			if(sent < 0)
+				throw new Exception(format("Error writing to %s", pty.name));
+			rawData = rawData[sent..$];
+		}
+	}
+
+	/**
+	  * Reads from a pty session
+	  * Returns the string that was read
+	  */
+	string readFromPty(Pty pty){
+		import core.sys.posix.unistd;
+		import std.conv : to;
+		ubyte[toRead] buf;
+		immutable long len = read(pty.fd, buf.ptr, toRead);
+		if(len >= 0){
+			return cast(string)(buf[0..len]);
+		}
+		return "";
+	}
+
+}
+version(Windows){
 
 	import core.sys.windows.windows;
-	
-	/+  The below was stolen (and slightly modified) from Adam Ruppe's terminal emulator. 
+
+	/+  The below was stolen (and slightly modified) from Adam Ruppe's terminal emulator.
 		https://github.com/adamdruppe/terminal-emulator/blob/master/terminalemulator.d
 		Thanks Adam!
 	+/
@@ -319,35 +378,45 @@ version(Windows){
 		//BOOL PeekNamedPipe(HANDLE, LPVOID, DWORD, LPDWORD, LPDWORD, LPDWORD);
 		//BOOL GetOverlappedResult(HANDLE,OVERLAPPED*,LPDWORD,BOOL);
 		//BOOL PostMessageA(HWND hWnd,UINT Msg,WPARAM wParam,LPARAM lParam);
-		
+
 		/// Reads from an IO device (https://msdn.microsoft.com/en-us/library/windows/desktop/aa365468%28v=vs.85%29.aspx)
 		BOOL ReadFileEx(HANDLE, LPVOID, DWORD, OVERLAPPED*, void*);
-		
+
 		BOOL PostThreadMessageA(DWORD, UINT, WPARAM, LPARAM);
-		
-		BOOL RegisterWaitForSingleObject( PHANDLE phNewWaitObject, HANDLE hObject, void* Callback, 
+
+		BOOL RegisterWaitForSingleObject( PHANDLE phNewWaitObject, HANDLE hObject, void* Callback,
 			PVOID Context, ULONG dwMilliseconds, ULONG dwFlags);
-		
+
 		BOOL SetHandleInformation(HANDLE, DWORD, DWORD);
-		
-		HANDLE CreateNamedPipeA( LPCTSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode, DWORD nMaxInstances, 
+
+		HANDLE CreateNamedPipeA( LPCTSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode, DWORD nMaxInstances,
 			DWORD nOutBufferSize, DWORD nInBufferSize, DWORD nDefaultTimeOut, LPSECURITY_ATTRIBUTES lpSecurityAttributes);
-		
+
 		BOOL UnregisterWait(HANDLE);
 		void SetLastError(DWORD);
+		private void readData(DWORD errorCode, DWORD numberOfBytes, OVERLAPPED* overlapped){
+			auto data = (cast(ubyte*) overlapped.hEvent)[0 .. numberOfBytes];
+		}
+		private void writeData(HANDLE h, string data){
+			uint written;
+			// convert data into a c string
+			auto cstr = cast(void*)data.toStringz;
+			if(WriteFile(h, cstr, data.length, &written, null) == 0)
+				throw new ExpectException("WriteFile " ~ to!string(GetLastError()));
+		}
 	}
+
 	__gshared HANDLE waitHandle;
 	__gshared bool childDead;
-	
+
 	void childCallback(void* tidp, bool) {
 		auto tid = cast(DWORD) tidp;
 		UnregisterWait(waitHandle);
-		
+
 		PostThreadMessageA(tid, WM_QUIT, 0, 0);
 		childDead = true;
-		//stupidThreadAlive = false;
 	}
-	
+
 	/// this is good. best to call it with plink.exe so it can talk to unix
 	/// note that plink asks for the password out of band, so it won't actually work like that.
 	/// thus specify the password on the command line or better yet, use a private key file
@@ -355,22 +424,22 @@ version(Windows){
 	/// startChild!something("plink.exe", "plink.exe user@server -i key.ppk \"/home/user/terminal-emulator/serverside\"");
 	auto startChild(string program, string commandLine) {
 		// thanks for a random person on stack overflow for this function
-		static BOOL MyCreatePipeEx(PHANDLE lpReadPipe, PHANDLE lpWritePipe, LPSECURITY_ATTRIBUTES lpPipeAttributes,	
+		static BOOL MyCreatePipeEx(PHANDLE lpReadPipe, PHANDLE lpWritePipe, LPSECURITY_ATTRIBUTES lpPipeAttributes,
 			DWORD nSize, DWORD dwReadMode, DWORD dwWriteMode)
 		{
 			HANDLE ReadPipeHandle, WritePipeHandle;
 			DWORD dwError;
 			CHAR[MAX_PATH] PipeNameBuffer;
-			
+
 			if (nSize == 0) {
 				nSize = 4096;
 			}
-			
+
 			static int PipeSerialNumber = 0;
-			
+
 			import core.stdc.string;
 			import core.stdc.stdio;
-			
+
 			// could use format here, but C function will add \0 like windows wants
 			// so may as well use it
 			sprintf(PipeNameBuffer.ptr,
@@ -378,7 +447,7 @@ version(Windows){
 				GetCurrentProcessId(),
 				PipeSerialNumber++
 				);
-			
+
 			ReadPipeHandle = CreateNamedPipeA(
 				PipeNameBuffer.ptr,
 				1/*PIPE_ACCESS_INBOUND*/ | dwReadMode,
@@ -389,11 +458,11 @@ version(Windows){
 				120 * 1000,    // Timeout in ms
 				lpPipeAttributes
 				);
-			
+
 			if (! ReadPipeHandle) {
 				return FALSE;
 			}
-			
+
 			WritePipeHandle = CreateFileA(
 				PipeNameBuffer.ptr,
 				GENERIC_WRITE,
@@ -403,27 +472,25 @@ version(Windows){
 				FILE_ATTRIBUTE_NORMAL | dwWriteMode,
 				null                       // Template file
 				);
-			
+
 			if (INVALID_HANDLE_VALUE == WritePipeHandle) {
 				dwError = GetLastError();
 				CloseHandle( ReadPipeHandle );
 				SetLastError(dwError);
 				return FALSE;
 			}
-			
+
 			*lpReadPipe = ReadPipeHandle;
 			*lpWritePipe = WritePipeHandle;
-			
+
 			return( TRUE );
 		}
-		
-		
-		
+
 		SECURITY_ATTRIBUTES saAttr;
 		saAttr.nLength = SECURITY_ATTRIBUTES.sizeof;
 		saAttr.bInheritHandle = true;
 		saAttr.lpSecurityDescriptor = null;
-		
+
 		HANDLE inreadPipe;
 		HANDLE inwritePipe;
 		if(CreatePipe(&inreadPipe, &inwritePipe, &saAttr, 0) == 0)
@@ -436,41 +503,35 @@ version(Windows){
 			throw new Exception("CreatePipe");
 		if(!SetHandleInformation(outreadPipe, 1/*HANDLE_FLAG_INHERIT*/, 0))
 			throw new Exception("SetHandleInformation");
-		
+
 		STARTUPINFO startupInfo;
 		startupInfo.cb = startupInfo.sizeof;
-		
+
 		startupInfo.dwFlags = STARTF_USESTDHANDLES;
 		startupInfo.hStdInput = inreadPipe;
 		startupInfo.hStdOutput = outwritePipe;
 		startupInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);//outwritePipe;
-		
+
 		PROCESS_INFORMATION pi;
-		
+
 		if(commandLine.length > 255)
 			throw new Exception("command line too long");
 		char[256] cmdLine;
 		cmdLine[0 .. commandLine.length] = commandLine[];
 		cmdLine[commandLine.length] = 0;
-		
-		
+
 		if(CreateProcessA(program is null ? null : toStringz(program), cmdLine.ptr, null, null, true, 0/*0x08000000 /* CREATE_NO_WINDOW */, null /* environment */, null, &startupInfo, &pi) == 0)
 			throw new Exception("CreateProcess " ~ to!string(GetLastError()));
-		
+
 		if(RegisterWaitForSingleObject(&waitHandle, pi.hProcess, &childCallback, cast(void*) GetCurrentThreadId(), INFINITE, 4 /* WT_EXECUTEINWAITTHREAD */ | 8 /* WT_EXECUTEONLYONCE */) == 0)
 			throw new Exception("RegisterWaitForSingleObject");
-		
-		//stupidThreadAlive = false;
-		
-		//term.stupidThread.join();
+
 		struct Pipes { HANDLE inwritepipe, outreadpipe; }
 		return Pipes(inwritePipe, outreadPipe);
-		
+
 	}
-
-
-
 }
+
 /+ --------------- Utils --------------- +/
 /**
   * Exceptions thrown during expecting data.
@@ -478,5 +539,30 @@ version(Windows){
 class ExpectException : Exception {
 	this(string message, string file = __FILE__, size_t line = __LINE__, Throwable next = null){
 		super(message, file, line, next);
+	}
+}
+
+/**
+  * Searches all dirs on path for exe if required,
+  * or simply calls it if it's a relative or absolute path
+  */
+string constructPathToExe(string exe){
+	import std.path;
+	import std.algorithm;
+	import std.file : exists;
+	import std.process : environment;
+
+	// if it already has a / or . at the start, assume the exe is correct
+	if(exe[0..1]==dirSeparator || exe[0..1]==".") return exe;
+	auto matches = environment["PATH"].split(pathSeparator)
+		.map!(path => path~dirSeparator~exe)
+		.filter!(path => path.exists);
+	return matches.empty ? exe : matches.front;
+}
+version(Posix){
+	unittest{
+		assert("sh".constructPathToExe == "/bin/sh");
+		assert("./myexe".constructPathToExe == "./myexe");
+		assert("/myexe".constructPathToExe == "/myexe");
 	}
 }

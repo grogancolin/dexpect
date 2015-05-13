@@ -8,5 +8,13 @@
 	],
 	"dependencies": {
 	},
-    "libs-posix": ["util"]
+    "libs-posix": ["util"],
+	"configurations":[
+		{
+			"name" : "expect-app",
+			"targetType" : "executable",
+			"versions" : ["ExpectMain"],
+			"dependencies" : { "docopt": "~>0.6.1-b.2" }
+		}
+	]
 }

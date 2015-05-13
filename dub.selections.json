@@ -1,4 +1,6 @@
 {
 	"fileVersion": 1,
-	"versions": {}
+	"versions": {
+		"docopt": "0.6.1-b.2"
+	}
 }
