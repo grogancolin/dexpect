@@ -1,3 +1,6 @@
 .dub/
 .dub/*
 dexpect
+*.exe
+dub.userprefs
+dub.selections.json

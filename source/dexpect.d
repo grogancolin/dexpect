@@ -35,7 +35,9 @@ module dexpect;
 
 import std.conv : to;
 import std.string;
-import core.thread : Thread, sleep, Duration, msecs;
+import core.thread : Thread, Duration, msecs;
+version(Windows) import core.thread : Sleep;
+version(Posix) import core.thread : sleep;
 import std.datetime : Clock;
 import std.algorithm : canFind;
 import std.path : isAbsolute;
@@ -58,6 +60,9 @@ Options:
 		Expect expect;
 		foreach(ref line; expectScript.byLine){
 			line.strip;
+			if(line.length==0) continue;
+			if(line[0]=='#') continue;
+			// TODO: This switch statement is brittle, write a better command handler
 			switch(line.startsWith("set", "spawn", "expect", "send", "print")){
 				case 1:
 					if(!line.canFind("=")) throw new ExpectException("Parsing error");
