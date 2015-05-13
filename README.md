@@ -8,7 +8,7 @@ To build the standalone app, clone this repo and run:<br>
 <br>
 
 
-Add it to your dub.json to use it in directly.<br>
+Add it to your dub.json to use it from D code.<br>
 Sample use cases:<br>
 Linux
 ```
