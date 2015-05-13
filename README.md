@@ -3,6 +3,8 @@ D Implementation of the Expect framework (http://expect.sourceforge.net/)
 Will run on both linux and windows - though hasnt been vigorously tested on either yet.
 Can be used as a standalone appliction or as a library as part of your app.
 
+Note: This is very early days and this lib will probably change quite a lot!
+
 To build the standalone app, clone this repo and run:<br>
 ```dub build --config=expect-app```
 <br>
