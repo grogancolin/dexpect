@@ -36,14 +36,15 @@ module dexpect;
 import std.conv : to;
 import std.string;
 import core.thread : Thread, Duration, msecs;
-version(Windows) import core.thread : Sleep;
-version(Posix) import core.thread : sleep;
+/+version(Windows) import core.thread : Sleep;
+version(Posix) import core.thread : sleep; +/
 import std.datetime : Clock;
 import std.algorithm : canFind;
 import std.path : isAbsolute;
 import std.stdio;
 
 version(ExpectMain){
+	pragma(msg, "This implementation of expect is very naive, be careful using it!");
 	import docopt;
 	const string doc =
 "dexpect
@@ -69,6 +70,8 @@ Options:
 					auto equalsIdx = line.indexOf("=");
 					string name = line[4..equalsIdx].idup;
 					string value = line[equalsIdx+1..$].idup;
+					if(expect !is null && name=="timeout")
+						expect.timeout = value.to!long;
 					customVariables[name] = value;
 					break;
 				case 2:
@@ -79,6 +82,8 @@ Options:
 						cmd = cmd[0..cmd.indexOf(" ")];
 					}
 					expect = new Expect(cmd, cmdArgs);
+					if(customVariables.keys.canFind("timeout"))
+						expect.timeout = customVariables["timeout"].to!long;
 					break;
 				case 3:
 					assert(expect !is null, "Error, must spawn before expect");
