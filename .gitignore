@@ -4,3 +4,5 @@ dexpect
 *.exe
 dub.userprefs
 dub.selections.json
+*.lib
+*.expect
