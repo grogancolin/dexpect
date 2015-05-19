@@ -36,8 +36,6 @@ module dexpect;
 import std.conv : to;
 import std.string;
 import core.thread : Thread, Duration, msecs;
-version(Windows) import core.thread : Sleep;
-version(Posix) import core.thread : sleep;
 import std.datetime : Clock;
 import std.algorithm : canFind;
 import std.path : isAbsolute;
@@ -70,6 +68,10 @@ Options:
 					string name = line[4..equalsIdx].idup;
 					string value = line[equalsIdx+1..$].idup;
 					customVariables[name] = value;
+					if(expect !is null && name=="timeout"){
+						expect.timeout = value.to!long;
+						writefln("Timeout is: %s", expect.timeout);
+					}
 					break;
 				case 2:
 					string cmd = line[6..$].idup;
@@ -79,6 +81,10 @@ Options:
 						cmd = cmd[0..cmd.indexOf(" ")];
 					}
 					expect = new Expect(cmd, cmdArgs);
+					if(customVariables.keys.canFind("timeout")){
+						expect.timeout = customVariables["timeout"].to!long;
+						writefln("Timeout is: %s", expect.timeout);
+					}
 					break;
 				case 3:
 					assert(expect !is null, "Error, must spawn before expect");
@@ -101,6 +107,7 @@ Options:
 		return 0;
 	}
 }
+
 /// Expect spawns a process in a Spawn object.
 /// You then call expect("desired output"); sendLine("desired Input");
 /// to interact with said process
@@ -160,7 +167,7 @@ public class Expect{
 				return true;
 			}
 		}
-		throw new ExpectException(format("Timed out expecting %s in %s",toExpect, this.data));
+		throw new ExpectException(format("Duration: %s. Timed out expecting %s in {\n%s\n}",timeout, toExpect, this.data));
 	}
 
 	/// Sends a line to the pty. Ensures it ends with newline
@@ -196,6 +203,7 @@ public class Expect{
 		}
 	}
 
+	public:
 	/// Sets the default timeout
 	@property timeout(Duration t) { this._timeout = t; }
 	/// Sets the timeout to t milliseconds
@@ -370,6 +378,7 @@ version(Posix){
 	}
 
 }
+
 version(Windows){
 
 	import core.sys.windows.windows;
@@ -379,11 +388,6 @@ version(Windows){
 		Thanks Adam!
 	+/
 	extern(Windows){
-		/// may not be needed
-		//BOOL PeekNamedPipe(HANDLE, LPVOID, DWORD, LPDWORD, LPDWORD, LPDWORD);
-		//BOOL GetOverlappedResult(HANDLE,OVERLAPPED*,LPDWORD,BOOL);
-		//BOOL PostMessageA(HWND hWnd,UINT Msg,WPARAM wParam,LPARAM lParam);
-
 		/// Reads from an IO device (https://msdn.microsoft.com/en-us/library/windows/desktop/aa365468%28v=vs.85%29.aspx)
 		BOOL ReadFileEx(HANDLE, LPVOID, DWORD, OVERLAPPED*, void*);
 
