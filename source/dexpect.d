@@ -42,6 +42,7 @@ import std.path : isAbsolute;
 import std.stdio;
 
 version(ExpectMain){
+	pragma(msg, "This implementation of expect is very naive, be careful using it!");
 	import docopt;
 	const string doc =
 "dexpect
@@ -67,6 +68,8 @@ Options:
 					auto equalsIdx = line.indexOf("=");
 					string name = line[4..equalsIdx].idup;
 					string value = line[equalsIdx+1..$].idup;
+					if(expect !is null && name=="timeout")
+						expect.timeout = value.to!long;
 					customVariables[name] = value;
 					if(expect !is null && name=="timeout"){
 						expect.timeout = value.to!long;
