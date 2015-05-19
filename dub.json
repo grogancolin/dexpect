@@ -13,8 +13,11 @@
 		{
 			"name" : "expect-app",
 			"targetType" : "executable",
-			"versions" : ["ExpectMain"],
-			"dependencies" : { "docopt": "~>0.6.1-b.2" }
+			"versions" : ["DExpectMain"],
+			"dependencies" : {
+				"docopt": "~>0.6.1-b.2",
+				"pegged": "~>0.2.1"
+			}
 		}
 	]
 }
