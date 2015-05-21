@@ -37,12 +37,14 @@ module expectapp;
 
 version(DExpectMain){
 	import docopt;
-	import std.stdio;
-	import dexpect;
+	import std.stdio : File, writefln, stdout, stderr;
+	import dexpect : Expect, ExpectSink, ExpectException;
+	import std.datetime : Clock;
 	import pegged.grammar;
-	import std.string;
-	import std.file;
-	import std.algorithm;
+	import std.string : format, indexOf;
+	import std.file : readText, exists;
+	import std.algorithm : all, any, filter, each, canFind;
+	import std.path : baseName;
 
 version(Windows){
 	enum isWindows=true;
@@ -79,24 +81,39 @@ Options:
 		}
 		import std.typecons : Tuple;
 		import std.array : array;
+		import std.traits;
 		alias fname_text = Tuple!(string, "fname", string, "text");
-		alias fname_grammar = Tuple!(string, "fname", ParseTree, "grammar");
+		alias fname_grammar = Tuple!(string, "fname", ParseTree, "parsedGrammar");
 		alias fname_handler = Tuple!(string, "fname", ScriptHandler, "handler");
 		alias fname_result = Tuple!(string, "fname", bool, "result");
-		auto results = fList
+		auto parsedScripts = fList
 			.map!(a => fname_text(a, a.readText))
-			.map!(b => fname_grammar(b.fname, ScriptGrammar(b.text)))
-			.map!(c => fname_handler(c.fname, ScriptHandler(c.grammar.children[0])))
-			.map!(d => fname_result(d.fname, d.handler.run))
-			.array; // eagerly run everything
+			.map!(b => fname_grammar(b.fname, ScriptGrammar(b.text)));
 
-		writefln("----- Succesful -----");
-		results.filter!(a => a.result==true)
-			.each!(a => writefln("%s", a.fname));
+		bool[string] results;
 
-		writefln("\n----- Failures -----");
-		results.filter!(a => a.result==false)
-			.each!(a => writefln("%s", a.fname));
+		foreach(script; parsedScripts){
+			string fname =
+			format("%s_%s.dexpectOutput",
+				Clock.currTime.toISOString.stripToFirst('.'), script.fname.baseName);
+			ExpectSink sink = ExpectSink([File(fname, "w")]);
+			if(verbose)
+				sink.addFile(stdout);
+			ScriptHandler s = ScriptHandler(script.parsedGrammar.children[0]);
+			s.sink = sink;
+			results[script.fname] = s.run();
+		}
+
+		if(results.values.any!(a => a==true))
+			writefln("----- Succesful -----");
+		results.keys.filter!(key => results[key]==true)
+			.each!(key => writefln("%s", key));
+
+		if(results.values.any!(a => a==false))
+			writefln("\n----- Failures -----");
+		results.keys.filter!(key => results[key]==false)
+			.each!(key => writefln("%s", key));
+
 		return 0;
 	}
 
@@ -104,7 +121,8 @@ struct ScriptHandler{
 	ParseTree theScript;
 	Expect expect;
 	string[string] variables;
-	alias variables this;
+	ExpectSink sink;
+	alias variables this; // referencing 'this' will now point to variables
 
 	/**
 	  * Overloads the index operators so when "timeout" is set,
@@ -113,16 +131,22 @@ struct ScriptHandler{
 	void opIndexAssign(string value, string name){
 		if(name == "timeout" && this.expect !is null)
 			expect.timeout = value.to!long;
+		if(name == "?")
+			throw new ExpectScriptException("Trying to set a variable named '?'");
 		this.variables[name] = value;
 	}
-
 	string opIndex(string name){
 		return this.variables[name];
 	}
+
 	@disable this();
 	this(ParseTree t){
 		this.theScript = t;
 	}
+	/**
+	  * Runs this script.
+	  * Returns true if the script succeeds
+	  */
 	bool run(){
 		try{
 			this.handleScript(theScript);
@@ -130,16 +154,28 @@ struct ScriptHandler{
 			return false;
 		} catch(ExpectScriptParseException e){
 			stderr.writefln("An error occured.\n%s", e.msg);
+			return false;
 		}
 		return true;
 	}
+
+	/**
+	  * Handles the script, delegating the work down to it's helper functions
+	  */
 	void handleScript(ParseTree script){
 		assert(script.name == "ScriptGrammar.Script");
 		auto blocks = script.children;
 		blocks.each!(block => this.handleBlock(block, expect));
 	}
 
+	/*
+	 * Handles a Block, parsing it's Attributes if required, and delegating its children to
+	 * handleEnclosedBlock or handleStatement, depending on it's type.
+	 */
 	void handleBlock(ParseTree block, ref Expect e){
+		// checks whether we should run this block
+		// A block should be run if it has no ScriptGrammar.OSAttr attribute, or if it has no
+		// ScriptGrammar.OSAttr not pointing at this os
 		auto doRun = block.getAttributes("ScriptGrammar.OSAttr")
 			.map!(attr => attr.children[0])
 			.filter!(osAttr => osAttr.matches[0] != os)
@@ -178,6 +214,7 @@ struct ScriptHandler{
 				}
 			});
 	}
+
 	void handleStatement(ParseTree statement, ref Expect e){
 		statement.children
 			.each!((child){
@@ -301,7 +338,7 @@ struct ScriptHandler{
 			}
 			return str;
 		}
-		e = new Expect(spawnHelper(spawn.children[0]));
+		e = new Expect(spawnHelper(spawn.children[0]), this.sink);
 		if(this.keys.canFind("timeout"))
 			e.timeout = this["timeout"].to!long;
 	}
@@ -374,10 +411,20 @@ ScriptGrammar:
 `;
 
 /+ --------------- Utils --------------- +/
+
+// Strits a string up to the first instance of c
+string stripToFirst(string str, char c){
+	return str[0..str.indexOf(c)];
+}
 /**
   * Exceptions thrown during expecting data.
   */
 class ExpectScriptParseException : Exception {
+	this(string message, string file = __FILE__, size_t line = __LINE__, Throwable next = null){
+		super(message, file, line, next);
+	}
+}
+class ExpectScriptException : Exception {
 	this(string message, string file = __FILE__, size_t line = __LINE__, Throwable next = null){
 		super(message, file, line, next);
 	}

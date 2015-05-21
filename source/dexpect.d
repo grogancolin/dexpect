@@ -39,12 +39,20 @@ import core.thread : Thread, Duration, msecs;
 import std.datetime : Clock;
 import std.algorithm : canFind;
 import std.path : isAbsolute;
-import std.stdio;
+import std.stdio : File, stdout;
+import std.range : isOutputRange;
 
-/// Expect spawns a process in a Spawn object.
+alias Expect = ExpectImpl!ExpectSink;
+
+static ExpectSink defaultSink;
+static this(){
+	defaultSink = ExpectSink([stdout]);
+}
+
+/// ExpectImpl spawns a process in a Spawn object.
 /// You then call expect("desired output"); sendLine("desired Input");
 /// to interact with said process
-public class Expect{
+public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 	/// Amount of time to wait before ending expect call.
 	private Duration _timeout=5000.msecs;
 
@@ -57,14 +65,16 @@ public class Expect{
 	/// String containing the last string expect function was called on
 	private string lastExpect;
 
+	OutputRange _sink;
 	/// Constructs an Expect that runs cmd with no args
-	this(string cmd){
-		this(cmd, []);
+	this(string cmd, OutputRange sink = .defaultSink){
+		this(cmd, [], sink);
 	}
 	/// Constructs an Expect that runs cmd with args
 	/// On linux, this passes the args with cmd on front if required
 	/// On windows, it passes the args as a single string seperated by spaces
-	this(string cmd, string[] args){
+	this(string cmd, string[] args, OutputRange sink = .defaultSink){
+		this.sink = sink;
 		this.spawn.spawn(cmd, args);
 	}
 
@@ -81,7 +91,7 @@ public class Expect{
 	/// Expects toExpect in output of spawn within custom timeout
 	public int expect(string toExpect, Duration timeout){
 		this.lastExpect = toExpect;
-		//writefln("Expect : %s", toExpect);
+		this.sink.put("Expect : %s", toExpect);
 		Thread.sleep(50.msecs);
 		auto startTime = Clock.currTime;
 		auto timeLastPrintedMessage = Clock.currTime;
@@ -91,7 +101,7 @@ public class Expect{
 			// so usually you wont see it
 			if(Clock.currTime >= timeLastPrintedMessage + 5100.msecs){
 				string update = this.data.length > 50 ? this.data[$-50..$] : this.data;
-				//writefln("Last %s chars of data: %s", update.length, update.strip);
+				this.sink.put("Last %s chars of data: %s", update.length, update.strip);
 				timeLastPrintedMessage = Clock.currTime;
 			}
 			// check if we finally have what we want in the output, if so, return
@@ -112,7 +122,7 @@ public class Expect{
 	}
 	/// Sends command to the pty
 	public void send(string command){
-		//writef("Sending: %s", command);
+		this.sink.put("Sending: %s", command);
 		this.spawn.sendData(command);
 	}
 	/// Reads data from the spawn
@@ -148,6 +158,21 @@ public class Expect{
 	/// Reads and then returns all data after the last succesfull expect. WARNING: May block if spawn is constantly writing data
 	@property string after(){ readAllAvailable; return this.spawn.allData[indexLastExpect..$]; }
 	@property string data(){ return this.spawn.allData; }
+
+	@property OutputRange sink(){ return this._sink; }
+	@property void sink(OutputRange f){ this._sink = f; }
+}
+
+
+public struct ExpectSink{
+	File[] files;
+	@property void addFile(File f){ files ~= f; }
+	@property File[] file(){ return files; }
+
+	void put(Args...)(string fmt, Args args){
+		foreach(file; files)
+			file.writefln(fmt, args);
+	}
 }
 
 /// Holds information on how to spawn off subprocesses
