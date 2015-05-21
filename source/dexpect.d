@@ -81,7 +81,7 @@ public class Expect{
 	/// Expects toExpect in output of spawn within custom timeout
 	public int expect(string toExpect, Duration timeout){
 		this.lastExpect = toExpect;
-		writefln("Waiting for %s", toExpect);
+		//writefln("Expect : %s", toExpect);
 		Thread.sleep(50.msecs);
 		auto startTime = Clock.currTime;
 		auto timeLastPrintedMessage = Clock.currTime;
@@ -91,7 +91,7 @@ public class Expect{
 			// so usually you wont see it
 			if(Clock.currTime >= timeLastPrintedMessage + 5100.msecs){
 				string update = this.data.length > 50 ? this.data[$-50..$] : this.data;
-				writefln("Last %s chars of data: %s", update.length, update.strip);
+				//writefln("Last %s chars of data: %s", update.length, update.strip);
 				timeLastPrintedMessage = Clock.currTime;
 			}
 			// check if we finally have what we want in the output, if so, return
@@ -112,7 +112,7 @@ public class Expect{
 	}
 	/// Sends command to the pty
 	public void send(string command){
-		writef("Sending: %s", command);
+		//writef("Sending: %s", command);
 		this.spawn.sendData(command);
 	}
 	/// Reads data from the spawn

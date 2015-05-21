@@ -59,186 +59,318 @@ version(Posix){
 	const string doc =
 "dexpect
 Usage:
-    dexpect [-h] <file>
+    dexpect [-h] [-v] <file>...
 Options:
-    -h --help    Show this message
+    -h --help     Show this message
+	-v --verbose  Show verbose output
 ";
-	string[string] customVariables;
+
 	int main(string[] args){
 
 		auto arguments = docopt.docopt(doc, args[1..$], true, "dexpect 0.0.1");
-		writeln(arguments);
+		bool verbose = arguments["--verbose"].toString.to!bool;
+		if(verbose) writefln("Command line args:\n%s\n", arguments);
 
-		File expectScript = File(arguments["<file>"].toString, "r");
-		auto parsedScript = ExpectScript(arguments["<file>"].toString.readText);
-
-		// TDOO: Remove these asserts in favor of proper error messages
-		assert(parsedScript.name=="ExpectScript");
-		// ensure there is a "Script" element
-		assert(parsedScript.children.length == 1);
-		assert(parsedScript.children[0].name == "ExpectScript.Script");
-		auto script = parsedScript.children[0];
-
-		Expect expect;
-		string[string] variables;
-		// Helper functions for handling each type of command
-		void handleSet(ParseTree p){
-			if(p.children.length != 2) throw new ExpectScriptParseException("Error parsing Set");
-			string name = p.children[0].children[0].matches[0]; //Set.SetName.VerName
-			string value="";
-			foreach(child; p.children[1].children){//p.children[1] == Set.SetVal
-				switch(child.name){
-					case "ExpectScript.Variable":
-						if(!variables.keys.canFind(child.matches[0])) throw new ExpectScriptParseException("Undefined variable");
-						value ~= variables[child.matches[0]];
-						break;
-					case "ExpectScript.String":
-						value ~= child.matches[0];
-						break;
-					default: break;
-				}
-			}
-			variables[name] = value;
+		auto fList = arguments["<file>"].asList;
+		if(!arguments["<file>"].asList
+				.all!(fName => fName.exists)){
+				writefln("Error, a filename does not exist\n%s", fList.to!string);
+				return 1;
 		}
+		import std.typecons : Tuple;
+		import std.array : array;
+		alias fname_text = Tuple!(string, "fname", string, "text");
+		alias fname_grammar = Tuple!(string, "fname", ParseTree, "grammar");
+		alias fname_handler = Tuple!(string, "fname", ScriptHandler, "handler");
+		alias fname_result = Tuple!(string, "fname", bool, "result");
+		auto results = fList
+			.map!(a => fname_text(a, a.readText))
+			.map!(b => fname_grammar(b.fname, ScriptGrammar(b.text)))
+			.map!(c => fname_handler(c.fname, ScriptHandler(c.grammar.children[0])))
+			.map!(d => fname_result(d.fname, d.handler.run))
+			.array; // eagerly run everything
 
-		void handleSpawn(ParseTree p){
-			if(p.children.length != 1) throw new ExpectScriptParseException("Error parsing Spawn. ");
+		writefln("----- Succesful -----");
+		results.filter!(a => a.result==true)
+			.each!(a => writefln("%s", a.fname));
 
-			string toSpawn="";
-			foreach(child; p.children[0].children){
-				switch(child.name){
-					case "ExpectScript.Variable":
-						if(!variables.keys.canFind(child.matches[0])) throw new ExpectScriptParseException("Undefined variable");
-						toSpawn ~= variables[child.matches[0]];
-						break;
-					case "ExpectScript.String":
-						toSpawn ~= child.matches[0];
-						break;
-					default: writefln("Error - %s", p); break;
-				}
-			}
-			expect = new Expect(toSpawn);
-
-		}
-
-		void handleExpect(ParseTree p){
-			if(p.children.length != 1) throw new ExpectScriptParseException("Error parsing Expect");
-
-			if(expect is null)
-				throw new ExpectException("Cannot expect before spawning");
-
-			string toExpect="";
-			foreach(child; p.children[0].children){
-				switch(child.name){
-					case "ExpectScript.Variable":
-						if(!variables.keys.canFind(child.matches[0])) throw new ExpectScriptParseException("Undefined variable");
-						toExpect ~= variables[child.matches[0]];
-						break;
-					case "ExpectScript.String":
-						toExpect ~= child.matches[0];
-						break;
-					default: break;
-				}
-			}
-			expect.expect(toExpect);
-		}
-
-		void handleSend(ParseTree p){
-			if(p.children.length != 1) throw new ExpectScriptParseException("Error parsing Send");
-			if(expect is null)
-				throw new ExpectException("Cannot send data before spawning");
-
-			string toSend="";
-			foreach(child; p.children[0].children){
-				switch(child.name){
-					case "ExpectScript.Variable":
-						if(!variables.keys.canFind(child.matches[0])) throw new ExpectScriptParseException("Undefined variable");
-						toSend ~= variables[child.matches[0]];
-						break;
-					case "ExpectScript.String":
-						toSend ~= child.matches[0];
-						break;
-					default: break;
-				}
-			}
-			expect.sendLine(toSend);
-		}
-
-		// Process the parse tree!
-		script.children
-			.filter!(a => // tests if a parse tree has an Attribute tag, and then checks if that attribute matches this os
-						  // TODO: Will need to improve this once(if) more attributes are supported
-						  a.children[0].name != "ExpectScript.Attributes" ||
-						  a.children[0].matches[0] == os )
-			.map!(	 a => // strip out the attributes parse tree as we now dont need it
-					 a.children[0].name == "ExpectScript.Attributes" ?
-					 a.children[1] : a.children[0])
-			.each!( (a) { // every remaining parse tree is a Set/Spawn/Expect/Send. Deal with each accordingly
-					switch(a.name){
-						case "ExpectScript.Set": handleSet(a); break;
-						case "ExpectScript.Spawn" : handleSpawn(a); break;
-						case "ExpectScript.Expect" : handleExpect(a); break;
-						case "ExpectScript.Send" : handleSend(a); break;
-						default: break;
-					}
-				});
-		writefln("%s", variables);
+		writefln("\n----- Failures -----");
+		results.filter!(a => a.result==false)
+			.each!(a => writefln("%s", a.fname));
 		return 0;
 	}
+
+struct ScriptHandler{
+	ParseTree theScript;
+	Expect expect;
+	string[string] variables;
+	alias variables this;
+
+	/**
+	  * Overloads the index operators so when "timeout" is set,
+	  * it is propogated to the Expect variable
+	  */
+	void opIndexAssign(string value, string name){
+		if(name == "timeout" && this.expect !is null)
+			expect.timeout = value.to!long;
+		this.variables[name] = value;
+	}
+
+	string opIndex(string name){
+		return this.variables[name];
+	}
+	@disable this();
+	this(ParseTree t){
+		this.theScript = t;
+	}
+	bool run(){
+		try{
+			this.handleScript(theScript);
+		} catch(ExpectException e){
+			return false;
+		} catch(ExpectScriptParseException e){
+			stderr.writefln("An error occured.\n%s", e.msg);
+		}
+		return true;
+	}
+	void handleScript(ParseTree script){
+		assert(script.name == "ScriptGrammar.Script");
+		auto blocks = script.children;
+		blocks.each!(block => this.handleBlock(block, expect));
+	}
+
+	void handleBlock(ParseTree block, ref Expect e){
+		auto doRun = block.getAttributes("ScriptGrammar.OSAttr")
+			.map!(attr => attr.children[0])
+			.filter!(osAttr => osAttr.matches[0] != os)
+			.empty;
+		if(doRun == false){
+			return;
+		}
+
+		block.children
+			.filter!(child => child.name != "ScriptGrammar.Attribute") // remove attribute blocks, as we dont need em anymore
+			.filter!(child => child.children.length > 0) // remove empty blocks
+			.each!((node){
+				switch(node.name){
+					case "ScriptGrammar.EnclosedBlock":
+						handleEnclosedBlock(node, e);
+						break;
+					case "ScriptGrammar.OpenBlock":
+						handleStatement(node.children[0], e);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", node));
+				}
+			});
+	}
+
+	void handleEnclosedBlock(ParseTree block, ref Expect e){
+		block.children
+			.each!((node){
+				switch(node.name){
+					case "ScriptGrammar.Block":
+						handleBlock(node, e);
+						break;
+					case "ScriptGrammar.Statement":
+						handleStatement(node, e);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", node));
+				}
+			});
+	}
+	void handleStatement(ParseTree statement, ref Expect e){
+		statement.children
+			.each!((child){
+				switch(child.name){
+					case "ScriptGrammar.Spawn":
+						handleSpawn(child, e);
+						break;
+					case "ScriptGrammar.Expect":
+						handleExpect(child, e);
+						break;
+					case "ScriptGrammar.Set":
+						handleSet(child);
+						break;
+					case "ScriptGrammar.Send":
+						handleSend(child, e);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
+				}
+			});
+	}
+
+	void handleSend(ParseTree send, ref Expect e){
+		if(send.children.length == 0)
+			throw new ExpectScriptParseException("Error parsing set command");
+
+		string sendHelper(ParseTree toSend){
+			string str;
+			foreach(child; toSend.children){
+				switch(child.name){
+					case "ScriptGrammar.String":
+						str ~= child.matches[0];
+						break;
+					case "ScriptGrammar.Variable":
+						str ~= this[child.matches[0]];
+						break;
+					case "ScriptGrammar.ToSend":
+						str ~= sendHelper(child);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
+				}
+			}
+			return str;
+		}
+		e.sendLine(sendHelper(send.children[0]));
+	}
+	void handleSet(ParseTree set){
+		if(set.children.length != 2)
+			throw new ExpectScriptParseException("Error parsing set command");
+		string setHelper(ParseTree toSet){
+			string str;
+			foreach(child; toSet.children){
+				switch(child.name){
+					case "ScriptGrammar.String":
+						str ~= child.matches[0];
+						break;
+					case "ScriptGrammar.Variable":
+						str ~= this[child.matches[0]];
+						break;
+					case "ScriptGrammar.SetVal":
+						str ~= setHelper(child);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
+				}
+			}
+			return str;
+		}
+		string name, value;
+		foreach(child; set.children){
+			if(child.name == "ScriptGrammar.SetVar")
+				name = child.matches[0];
+			else if(child.name == "ScriptGrammar.SetVal")
+				value = setHelper(child);
+		}
+		this[name] = value;
+	}
+
+	void handleExpect(ParseTree expect, ref Expect e){
+		if(expect.children.length ==0 )
+			throw new ExpectScriptParseException("Error parsing expect command");
+		if(e is null)
+			throw new ExpectScriptParseException("Cannot call expect before spawning");
+		string expectHelper(ParseTree toExpect){
+			string str;
+			foreach(child; toExpect.children){
+				switch(child.name){
+					case "ScriptGrammar.String":
+						str ~= child.matches[0];
+						break;
+					case "ScriptGrammar.Variable":
+						str ~= this[child.matches[0]];
+						break;
+					case "ScriptGrammar.ToExpect":
+						str ~= expectHelper(child);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
+				}
+			}
+			return str;
+		}
+		e.expect(expectHelper(expect.children[0]));
+	}
+
+	void handleSpawn(ParseTree spawn, ref Expect e){
+		if(spawn.children.length == 0)
+			throw new ExpectScriptParseException("Error parsing spawn command");
+		string spawnHelper(ParseTree toSpawn){
+			string str;
+			foreach(child; toSpawn.children){
+				switch(child.name){
+					case "ScriptGrammar.String":
+						str ~= child.matches[0];
+						break;
+					case "ScriptGrammar.Variable":
+						str ~= this[child.matches[0]];
+						break;
+					case "ScriptGrammar.ToSpawn":
+						str ~= spawnHelper(child);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
+				}
+			}
+			return str;
+		}
+		e = new Expect(spawnHelper(spawn.children[0]));
+		if(this.keys.canFind("timeout"))
+			e.timeout = this["timeout"].to!long;
+	}
+}
+auto getAttributes(ParseTree tree){ //checks if this tree has attributes
+	return tree.children
+		.filter!(child => child.name == "ScriptGrammar.Attribute");
+}
+auto getAttributes(ParseTree tree, string attrName){ //checks if this tree has attributes
+	return tree.getAttributes
+		.filter!(attr => attr.children.length > 0)
+		.filter!(attr => attr.children[0].name == attrName);
+}
 
 mixin(grammar(scriptGrammar));
 
 /// Grammar to be parsed by pegged
 /// Potentially full of bugs
 enum scriptGrammar = `
-ExpectScript:
+ScriptGrammar:
+	# This is a simple testing bed for grammars
+	Script		<- (EmptyLine / Block)+ :eoi
+	Block		<- Attribute? (:' ' Attribute)* (EnclosedBlock / OpenBlock) :Whitespace*
 
-	# This handles reading in expect script files.
-	# Lots to add to this, but will work for simple files
+	Attribute  <- ( OSAttr )
+	OSAttr       <- ('win' / 'linux')
 
-	Script      	<- (EmptyLine / Command)+ :eoi
-	Command     	<- :Spacing* Attributes* :Spacing* (
-						Comment
-						/ Set
-						/ Expect
-						/ Spawn
-						/ Send
-				       ) :Spacing* :endOfLine*
+	EnclosedBlock <- :Whitespace* '{'
+					 ( :Whitespace* (Statement / Block) :Whitespace* )*
+					 :Whitespace* '}' :Whitespace*
+	OpenBlock	<- (:Whitespace* Statement :Whitespace*)
 
-	Attributes		<- (VersionWin / VersionLinux)
+	Statement	<- :Whitespace* (Comment / Spawn / Send / Expect / Set) :Spacing* :Whitespace*
 
-	VersionWin    	<- "win"
-	VersionLinux 	<- "linux"
+	Comment		<: :Spacing* '#' (!eoi !endOfLine .)*
 
-	Comment			<: :"#" (!eoi !endOfLine .)+ :endOfLine
+	Spawn		<- :"spawn" :Spacing* ToSpawn
+	ToSpawn	<- (~Variable / ~String) :Spacing ('~' :Spacing ToSpawn)*
 
-	Set				<- :"set" :Spacing (!eoi !endOfLine !Equals) SetName :Equals SetVal
-	SetName			<- ~VarName
-	SetVal			<- ( ~Variable / ~String ) (:Spacing* :'~' :Spacing? (~Variable / ~String))*
+	Send		<- :"send" :Spacing* ToSend
+	ToSend	<- (~Variable / ~String) :Spacing ('~' :Spacing ToSend)*
 
-	Expect			<- :"expect" :Spacing ToExpect
-	ToExpect		<- (~Variable / ~String) (:Spacing* :'~' :Spacing? (~Variable / ~String))*
+	Expect		<- :"expect" :Spacing* ToExpect
+	ToExpect	<- (~Variable / ~String) :Spacing ('~' :Spacing ToExpect)*
 
-	Spawn			<- :"spawn" :Spacing ToSpawn
-	ToSpawn			<- (~Variable / ~String) (:Spacing* :'~' :Spacing? (~Variable / ~String))*
+	Set			<- :'set' :Spacing* SetVar :Spacing :'=' Spacing SetVal
+	SetVar		<- ~VarName
+	SetVal		<- (~Variable / ~String) :Spacing ('~' :Spacing SetVal)*
 
-	Send			<- :"send" :Spacing ToSend
-	ToSend			<- (~Variable / ~String) (:Spacing* :'~' :Spacing? (~Variable / ~String))*
+	Keyword		<~ ('#' / 'set' / 'expect' / 'spawn' / 'send')
+	KeywordData <~ (!eoi !endOfLine .)+
 
 	Variable    	<- :"$(" VarName :")"
-	VarName     	<- (!eoi !endOfLine !')' !'(' !'$' !Equals .)+
+	VarName     	<- (!eoi !endOfLine !')' !'(' !'$' !'=' !'~' .)+
 
-	Text        <- (!eoi !endOfLine !'~' .)+
-	DoubleQuoteText <- :doublequote (!eoi !endOfLine !doublequote .)+ :doublequote
-	SingleQuoteText <- :"'" (!eoi !endOfLine !"'" .)+ :"'"
+	Text			<- (!eoi !endOfLine !'~' .)+
+	DoubleQuoteText <- :doublequote
+					   (!eoi !endOfLine !doublequote .)+
+					   :doublequote
+	SingleQuoteText <- :"'"
+					   (!eoi !endOfLine !"'" .)+
+					   :"'"
 	String		<- (
 					~DoubleQuoteText /
 					~SingleQuoteText /
 					~Text
 				   )
-	Concat		<- (:Spacing* :'~' :Spacing? (~Variable / ~String))
-	EmptyLine   <: ('\n\r' / '\n')+
-	Equals		<- '='
+	Whitespace  <- (Spacing / EmptyLine)
+	EmptyLine   <- ('\n\r' / '\n')+
 `;
 
 /+ --------------- Utils --------------- +/
