@@ -9,10 +9,13 @@ To build the standalone app, clone this repo and run:
 
 ```dub build --config=expect-app```
 
+You should see a "dexpect" executable in the project root. (dexpect.exe on windows).
 
-Add it to your dub.json to use it from D code.
+To use it directly in D code, simply add it to your dub.json and away you go.
 
 Sample use cases:
+
+From D code
 
 ```
 Linux
@@ -38,7 +41,7 @@ writefln("Before: %s", e.before); // will print everything before the last expec
 writefln("After: %s", e.after); // will print the last expect + everything after it
 ```
 
-Sample script file:
+From a script file - 
 ```
 win{
    set shell=C:\Windows\System32\cmd.exe
@@ -74,6 +77,33 @@ Expect : ["Hello Nix"]
 Expect : ["$"]
 
 ```
+
+The scripting language is built on blocks of statemnts. A block is all statements between a '{' '}' pair.
+
+- Each block can have any number of Attributes before it (currently on "win" and "linux" are attributes).
+- Each block can contain any number of sub blocks (with their own attributes if required).
+- Each block can contain any number of statements (Spawn, expect, send and set).
+
+Set sets a variable. Syntax is<br/>
+```set varname=varvalue```<br/>
+varname cannot contain an '=', '~' char.<br/>
+varvalue can be anything, including a previously defined variable.<br/>
+The '~' char means concatenate, so<br/>
+```set var=value ~ $(othervar)```<br/>
+will prepent "value" onto $(othervar)<br/>
+
+Special variables include "timeout" which sets the timeout on any subsequent 'expect' calls, and "$?" which contains the index of the last succesful "expect" statement. This will be useful for 'if' statements, planned in a future build.
+
+Spawn \<string> spawns a new process. The process executed is \<string>
+ - All following expect and send statements will operate on the last spawned process.
+
+Expect \<string> waits for \<string> in the output of previous Spawn. 
+ - If after Timeout seconds (default=5) <string> is not found, script will stop executing and be marked as "failed".
+ - Can expect any previously set variable with $(varname).
+
+Send \<string> sends \<string> to the spawned process.
+ - Can send any previously set variable with $(varname).
+I used blocks because I plan on supporting functions in the future. A function will simply be a block 
 
 TODOs:
 
