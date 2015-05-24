@@ -64,7 +64,7 @@ Usage:
     dexpect [-h] [-v] <file>...
 Options:
     -h --help     Show this message
-	-v --verbose  Show verbose output
+    -v --verbose  Show verbose output
 ";
 
 	int main(string[] args){
@@ -92,16 +92,25 @@ Options:
 
 		bool[string] results;
 
+		auto failedParsing = parsedScripts.filter!(a => !a.parsedGrammar.successful);
+		if(!failedParsing.empty){
+			writefln("Parsing failure");
+			failedParsing.each!(a => writefln(" - %s", a.fname));
+			return 1;
+		}
 		foreach(script; parsedScripts){
 			string fname =
 			format("%s_%s.dexpectOutput",
 				Clock.currTime.toISOString.stripToFirst('.'), script.fname.baseName);
-			ExpectSink sink = ExpectSink([File(fname, "w")]);
-			if(verbose)
-				sink.addFile(stdout);
-			ScriptHandler s = ScriptHandler(script.parsedGrammar.children[0]);
-			s.sink = sink;
+			File[] outFiles = [File(fname, "w")];
+			if(verbose){
+				stdout.writefln("Executing script: %s", script.fname.baseName);
+				outFiles ~= stdout;
+			}
+			ScriptHandler s = ScriptHandler(script.parsedGrammar.children[0], outFiles);
+
 			results[script.fname] = s.run();
+			writefln("");
 		}
 
 		if(results.values.any!(a => a==true))
@@ -120,8 +129,8 @@ Options:
 struct ScriptHandler{
 	ParseTree theScript;
 	Expect expect;
+	File[] outFiles;
 	string[string] variables;
-	ExpectSink sink;
 	alias variables this; // referencing 'this' will now point to variables
 
 	/**
@@ -142,6 +151,10 @@ struct ScriptHandler{
 	@disable this();
 	this(ParseTree t){
 		this.theScript = t;
+	}
+	this(ParseTree t, File[] files){
+		this.theScript = t;
+		this.outFiles = files;
 	}
 	/**
 	  * Runs this script.
@@ -314,7 +327,7 @@ struct ScriptHandler{
 			}
 			return str;
 		}
-		e.expect(expectHelper(expect.children[0]));
+		variables["$?"] = e.expect(expectHelper(expect.children[0])).to!string;
 	}
 
 	void handleSpawn(ParseTree spawn, ref Expect e){
@@ -338,7 +351,7 @@ struct ScriptHandler{
 			}
 			return str;
 		}
-		e = new Expect(spawnHelper(spawn.children[0]), this.sink);
+		e = new Expect(spawnHelper(spawn.children[0]), this.outFiles);
 		if(this.keys.canFind("timeout"))
 			e.timeout = this["timeout"].to!long;
 	}

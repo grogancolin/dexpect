@@ -42,12 +42,7 @@ import std.path : isAbsolute;
 import std.stdio : File, stdout;
 import std.range : isOutputRange;
 
-alias Expect = ExpectImpl!ExpectSink;
-
-static ExpectSink defaultSink;
-static this(){
-	defaultSink = ExpectSink([stdout]);
-}
+//alias Expect = ExpectImpl!ExpectSink;
 
 /// ExpectImpl spawns a process in a Spawn object.
 /// You then call expect("desired output"); sendLine("desired Input");
@@ -67,14 +62,15 @@ public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 
 	OutputRange _sink;
 	/// Constructs an Expect that runs cmd with no args
-	this(string cmd, OutputRange sink = .defaultSink){
+	this(string cmd, OutputRange sink){
 		this(cmd, [], sink);
 	}
 	/// Constructs an Expect that runs cmd with args
 	/// On linux, this passes the args with cmd on front if required
 	/// On windows, it passes the args as a single string seperated by spaces
-	this(string cmd, string[] args, OutputRange sink = .defaultSink){
+	this(string cmd, string[] args, OutputRange sink){
 		this.sink = sink;
+		this._sink.put("Spawn  : %s %(%s %)", cmd, args);
 		this.spawn.spawn(cmd, args);
 	}
 
@@ -90,8 +86,9 @@ public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 
 	/// Expects toExpect in output of spawn within custom timeout
 	public int expect(string toExpect, Duration timeout){
-		this.lastExpect = toExpect;
-		this.sink.put("Expect : %s", toExpect);
+		return expect([toExpect], timeout);
+
+		/+this._sink.put("Expect : %s", toExpect);
 		Thread.sleep(50.msecs);
 		auto startTime = Clock.currTime;
 		auto timeLastPrintedMessage = Clock.currTime;
@@ -101,18 +98,45 @@ public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 			// so usually you wont see it
 			if(Clock.currTime >= timeLastPrintedMessage + 5100.msecs){
 				string update = this.data.length > 50 ? this.data[$-50..$] : this.data;
-				this.sink.put("Last %s chars of data: %s", update.length, update.strip);
+				this._sink.put("Last %s chars of data: %s", update.length, update.strip);
 				timeLastPrintedMessage = Clock.currTime;
 			}
 			// check if we finally have what we want in the output, if so, return
 			if(this.spawn.allData[indexLastExpect..$].canFind(toExpect)){
 				indexLastExpect = this.spawn.allData.lastIndexOf(toExpect);
-				return true;
+				this.lastExpect = toExpect;
+				return 1;
 			}
 		}
 		throw new ExpectException(format("Duration: %s. Timed out expecting %s in {\n%s\n}",timeout, toExpect, this.data));
+		+/
 	}
 
+	public int expect(string[] arr, Duration timeout){
+		this._sink.put("Expect : %s", arr);
+		Thread.sleep(50.msecs);
+		auto startTime = Clock.currTime;
+		auto timeLastPrintedMessage = Clock.currTime;
+		while(Clock.currTime < startTime + timeout){
+			// gives a status update to the user. Takes longer than the default timeout,
+			// so usually you wont see it
+			if(Clock.currTime >= timeLastPrintedMessage + 5100.msecs){
+				string update = this.data.length > 50 ? this.data[$-50..$] : this.data;
+				this._sink.put("Last %s chars of data: %s", update.length, update.strip);
+				timeLastPrintedMessage = Clock.currTime;
+			}
+			foreach(int idx, string toExpect; arr){
+				this.spawn.readNextChunk;
+				// check if we finally have what we want in the output, if so, return
+				if(this.spawn.allData[indexLastExpect..$].canFind(toExpect)){
+					indexLastExpect = this.spawn.allData.lastIndexOf(toExpect);
+					this.lastExpect = toExpect;
+					return idx;
+				}
+			}
+		}
+		throw new ExpectException(format("Duration: %s. Timed out expecting %s in {\n%s\n}", timeout, arr, this.data));
+	}
 	/// Sends a line to the pty. Ensures it ends with newline
 	public void sendLine(string command){
 		if(command.length == 0 || command[$-1] != '\n')
@@ -122,7 +146,7 @@ public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 	}
 	/// Sends command to the pty
 	public void send(string command){
-		this.sink.put("Sending: %s", command);
+		this._sink.put("Sending: %s", command.replace("\n", "\\n"));
 		this.spawn.sendData(command);
 	}
 	/// Reads data from the spawn
@@ -159,10 +183,28 @@ public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 	@property string after(){ readAllAvailable; return this.spawn.allData[indexLastExpect..$]; }
 	@property string data(){ return this.spawn.allData; }
 
-	@property OutputRange sink(){ return this._sink; }
+	@property auto sink(){ return this._sink; }
 	@property void sink(OutputRange f){ this._sink = f; }
 }
 
+public class Expect : ExpectImpl!ExpectSink{
+
+	this(string cmd, File[] oFiles ...){
+		ExpectSink newSink = ExpectSink(oFiles);
+		this(cmd, newSink);
+	}
+	this(string cmd, string[] args, File[] oFiles ...){
+		ExpectSink newSink = ExpectSink(oFiles);
+		this(cmd, args, newSink);
+	}
+	this(string cmd, ExpectSink sink){
+		this(cmd, [], sink);
+	}
+	this(string cmd, string[] args, ExpectSink sink){
+		super(cmd, args, sink);
+	}
+
+}
 
 public struct ExpectSink{
 	File[] files;
@@ -170,8 +212,9 @@ public struct ExpectSink{
 	@property File[] file(){ return files; }
 
 	void put(Args...)(string fmt, Args args){
-		foreach(file; files)
-			file.writefln(fmt, args);
+		foreach(file; files){
+			file.lockingTextWriter.put(format(fmt, args) ~ "\n");
+		}
 	}
 }
 
