@@ -90,7 +90,7 @@ varname cannot contain an '=', '~' char.<br/>
 varvalue can be anything, including a previously defined variable.<br/>
 The '~' char means concatenate, so<br/>
 ```set var=value ~ $(othervar)```<br/>
-will prepent "value" onto $(othervar)<br/>
+will prepend "value" onto $(othervar)<br/>
 
 Special variables include "timeout" which sets the timeout on any subsequent 'expect' calls, and "$?" which contains the index of the last succesful "expect" statement. This will be useful for 'if' statements, planned in a future build.
 
