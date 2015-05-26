@@ -185,6 +185,10 @@ public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 
 	@property auto sink(){ return this._sink; }
 	@property void sink(OutputRange f){ this._sink = f; }
+
+	void putAllData(){
+		this._sink.put("\n>>>>>\n%s\n<<<<<", this.data);
+	}
 }
 
 public class Expect : ExpectImpl!ExpectSink{

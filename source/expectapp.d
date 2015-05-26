@@ -42,9 +42,9 @@ version(DExpectMain){
 	import std.datetime : Clock;
 	import pegged.grammar;
 	import std.string : format, indexOf;
-	import std.file : readText, exists;
+	import std.file : readText, exists, mkdir;
 	import std.algorithm : all, any, filter, each, canFind;
-	import std.path : baseName;
+	import std.path : baseName, buildPath;
 
 version(Windows){
 	enum isWindows=true;
@@ -61,23 +61,28 @@ version(Posix){
 	const string doc =
 "dexpect
 Usage:
-    dexpect [-h] [-v] <file>...
+    dexpect [-h] [-v] [-d <dir>] <file>...
 Options:
     -h --help     Show this message
     -v --verbose  Show verbose output
+	-d --dir <dir>     The directory to print output files. [default: ./]
 ";
 
 	int main(string[] args){
 
 		auto arguments = docopt.docopt(doc, args[1..$], true, "dexpect 0.0.1");
 		bool verbose = arguments["--verbose"].toString.to!bool;
-		if(verbose) writefln("Command line args:\n%s\n", arguments);
+		if(verbose) writefln("Command line args:\n%s", arguments);
 
 		auto fList = arguments["<file>"].asList;
 		if(!arguments["<file>"].asList
 				.all!(fName => fName.exists)){
 				writefln("Error, a filename does not exist\n%s", fList.to!string);
 				return 1;
+		}
+		string outDir = arguments["--dir"].toString;
+		if(!outDir.exists){
+			mkdir(outDir);
 		}
 		import std.typecons : Tuple;
 		import std.array : array;
@@ -100,17 +105,19 @@ Options:
 		}
 		foreach(script; parsedScripts){
 			string fname =
-			format("%s_%s.dexpectOutput",
-				Clock.currTime.toISOString.stripToFirst('.'), script.fname.baseName);
+			[outDir, format("%s_%s.dexpectOutput",
+				Clock.currTime.toISOString.stripToFirst('.'), script.fname.baseName)].buildPath;
 			File[] outFiles = [File(fname, "w")];
 			if(verbose){
-				stdout.writefln("Executing script: %s", script.fname.baseName);
+				stdout.writefln("\nExecuting script: %s", script.fname.baseName);
 				outFiles ~= stdout;
 			}
 			ScriptHandler s = ScriptHandler(script.parsedGrammar.children[0], outFiles);
 
 			results[script.fname] = s.run();
-			writefln("");
+			if(verbose) stdout.writefln("");
+			s.printVariables;
+			s.printAllData;
 		}
 
 		if(results.values.any!(a => a==true))
@@ -172,6 +179,16 @@ struct ScriptHandler{
 		return true;
 	}
 
+	void printAllData(){
+		if(expect !is null){
+			expect.sink.put("Data from spawn:\n>>>>>\n%s\n<<<<<", expect.data);
+		}
+	}
+	void printVariables(){
+		if(expect !is null){
+			expect.sink.put("Variables used:\n%s", this.variables);
+		}
+	}
 	/**
 	  * Handles the script, delegating the work down to it's helper functions
 	  */
@@ -244,11 +261,38 @@ struct ScriptHandler{
 					case "ScriptGrammar.Send":
 						handleSend(child, e);
 						break;
+					case "ScriptGrammar.Import":
+						handleImport(child, e);
+						break;
 					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
 				}
 			});
 	}
 
+	void handleImport(ParseTree _import, ref Expect e){
+		if(_import.children.length != 1)
+			throw new ExpectScriptParseException("Error parsing import command");
+		string importHelper(ParseTree toImport){
+			string str;
+			foreach(child; toImport.children){
+				switch(child.name){
+					case "ScriptGrammar.String":
+						str ~= child.matches[0];
+						break;
+					case "ScriptGrammar.Variable":
+						str ~= child.matches[0];
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
+				}
+			}
+			return str;
+		}
+		// import the file into text
+		auto importText = importHelper(_import.children[0]).readText;
+		auto newParseTree = ScriptGrammar(importText);
+		handleScript(newParseTree.children[0]);
+
+	}
 	void handleSend(ParseTree send, ref Expect e){
 		if(send.children.length == 0)
 			throw new ExpectScriptParseException("Error parsing set command");
@@ -384,7 +428,7 @@ ScriptGrammar:
 					 :Whitespace* '}' :Whitespace*
 	OpenBlock	<- (:Whitespace* Statement :Whitespace*)
 
-	Statement	<- :Whitespace* (Comment / Spawn / Send / Expect / Set) :Spacing* :Whitespace*
+	Statement	<- :Whitespace* (Comment / Spawn / Send / Expect / Set / Import) :Spacing* :Whitespace*
 
 	Comment		<: :Spacing* '#' (!eoi !endOfLine .)*
 
@@ -401,6 +445,9 @@ ScriptGrammar:
 	SetVar		<- ~VarName
 	SetVal		<- (~Variable / ~String) :Spacing ('~' :Spacing SetVal)*
 
+	Import      <- 'import' :Spacing* ToImport
+	ToImport  <- (~Variable / ~String)
+
 	Keyword		<~ ('#' / 'set' / 'expect' / 'spawn' / 'send')
 	KeywordData <~ (!eoi !endOfLine .)+
 
@@ -409,10 +456,10 @@ ScriptGrammar:
 
 	Text			<- (!eoi !endOfLine !'~' .)+
 	DoubleQuoteText <- :doublequote
-					   (!eoi !endOfLine !doublequote .)+
+					   (!eoi !doublequote .)+
 					   :doublequote
 	SingleQuoteText <- :"'"
-					   (!eoi !endOfLine !"'" .)+
+					   (!eoi !"'" .)+
 					   :"'"
 	String		<- (
 					~DoubleQuoteText /
