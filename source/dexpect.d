@@ -218,6 +218,9 @@ public struct ExpectSink{
 	void put(Args...)(string fmt, Args args){
 		foreach(file; files){
 			file.lockingTextWriter.put(format(fmt, args) ~ "\n");
+			version(Windows){
+				file.flush; // ensure it's printed. Only needed on windows for some reason...
+			}
 		}
 	}
 }
@@ -436,7 +439,7 @@ version(Windows){
 	/// thus specify the password on the command line or better yet, use a private key file
 	/// e.g.
 	/// startChild!something("plink.exe", "plink.exe user@server -i key.ppk \"/home/user/terminal-emulator/serverside\"");
-	auto startChild(string program, string commandLine) {
+	auto startChild(string program, string commandLine, bool pipeStderrToStdout=true) {
 		// thanks for a random person on stack overflow for this function
 		static BOOL MyCreatePipeEx(PHANDLE lpReadPipe, PHANDLE lpWritePipe, LPSECURITY_ATTRIBUTES lpPipeAttributes,
 			DWORD nSize, DWORD dwReadMode, DWORD dwWriteMode)
@@ -524,7 +527,11 @@ version(Windows){
 		startupInfo.dwFlags = STARTF_USESTDHANDLES;
 		startupInfo.hStdInput = inreadPipe;
 		startupInfo.hStdOutput = outwritePipe;
-		startupInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);//outwritePipe;
+		if(pipeStderrToStdout)
+			startupInfo.hStdError = outwritePipe;
+		else
+			startupInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);//outwritePipe;
+
 
 		PROCESS_INFORMATION pi;
 
