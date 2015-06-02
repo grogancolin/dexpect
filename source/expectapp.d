@@ -45,7 +45,8 @@ version(DExpectMain){
 	import std.file : readText, exists, mkdir;
 	import std.algorithm : all, any, filter, each, canFind;
 	import std.path : baseName, buildPath;
-
+	import std.array : split;
+	import std.range : back;
 version(Windows){
 	enum isWindows=true;
 	enum isLinux=false;
@@ -61,10 +62,11 @@ version(Posix){
 	const string doc =
 "dexpect
 Usage:
-    dexpect [-h] [-v] [-d <dir>] <file>...
+    dexpect [-h] [-v] [--prettyPrintVars] [-d <dir>] <file>...
 Options:
     -h --help     Show this message
     -v --verbose  Show verbose output
+	--prettyPrintVars  If verbose is on, will print all variables used nicely
 	-d --dir <dir>     The directory to print output files. [default: ./]
 ";
 
@@ -72,6 +74,7 @@ Options:
 
 		auto arguments = docopt.docopt(doc, args[1..$], true, "dexpect 0.0.1");
 		bool verbose = arguments["--verbose"].toString.to!bool;
+		bool doPrettyPrint = arguments["--prettyPrintVars"].toString.to!bool;
 		if(verbose) writefln("Command line args:\n%s", arguments);
 
 		auto fList = arguments["<file>"].asList;
@@ -99,8 +102,11 @@ Options:
 
 		auto failedParsing = parsedScripts.filter!(a => !a.parsedGrammar.successful);
 		if(!failedParsing.empty){
-			writefln("Parsing failure");
-			failedParsing.each!(a => writefln(" - %s", a.fname));
+			writefln("Parsing failure. %s", verbose ? "" : "Run with -v for more info");
+			if(verbose)
+				failedParsing.each!(a => writefln(" - %s\n>>>>>%s\n<<<<<", a.fname, a.parsedGrammar));
+			else
+				failedParsing.each!(a => writefln(" - %s", a.fname));
 			return 1;
 		}
 		foreach(script; parsedScripts){
@@ -116,7 +122,7 @@ Options:
 
 			results[script.fname] = s.run();
 			if(verbose) stdout.writefln("");
-			s.printVariables;
+			s.printVariables(doPrettyPrint);
 			s.printAllData;
 		}
 
@@ -184,9 +190,12 @@ struct ScriptHandler{
 			expect.sink.put("Data from spawn:\n>>>>>\n%s\n<<<<<", expect.data);
 		}
 	}
-	void printVariables(){
+	void printVariables(bool doPretty = false){
+		string fmt = doPretty ?
+			"Variables used:\n%( %s = %s\n%)" :
+			"Variables used:\n%s";
 		if(expect !is null){
-			expect.sink.put("Variables used:\n%s", this.variables);
+			expect.sink.put(fmt, this.variables);
 		}
 	}
 	/**
@@ -374,7 +383,7 @@ struct ScriptHandler{
 		variables["$?"] = e.expect(expectHelper(expect.children[0])).to!string;
 	}
 
-	void handleSpawn(ParseTree spawn, ref Expect e){
+	void handleSpawn3(ParseTree spawn, ref Expect e){
 		if(spawn.children.length == 0)
 			throw new ExpectScriptParseException("Error parsing spawn command");
 		string spawnHelper(ParseTree toSpawn){
@@ -399,7 +408,60 @@ struct ScriptHandler{
 		if(this.keys.canFind("timeout"))
 			e.timeout = this["timeout"].to!long;
 	}
+	void handleSpawn(ParseTree spawn, ref Expect e){
+		if(spawn.children.length == 0)
+			throw new ExpectScriptParseException("Error parsing spawn command");
+		string spawnHelper(ParseTree toSpawn){
+			string str;
+			foreach(child; toSpawn.children){
+				constructHelperSwitch(child,
+					"ScriptGrammar.String", {str ~= child.matches[0];},
+					"ScriptGrammar.Variable", {str ~= this[child.matches[0]];},
+					"ScriptGrammar.ToSpawn", {str ~= spawnHelper(child);}
+				);
+/+
+				mixin(constructHelperSwitch(
+					"ScriptGrammar.String", {str ~= child.matches[0];},
+					"ScriptGrammar.Variable", {str ~= this[child.matches[0]];},
+					"ScriptGrammar.ToSpawn", {str ~= spawnHelper(child);}
+				)); +/
+				/+
+				switch(child.name){
+					case "ScriptGrammar.String":
+						str ~= child.matches[0];
+						break;
+					case "ScriptGrammar.Variable":
+						str ~= this[child.matches[0]];
+						break;
+					case "ScriptGrammar.ToSpawn":
+						str ~= spawnHelper(child);
+						break;
+					default: throw new ExpectScriptParseException(format("Error parsing ParseTree - data %s", child));
+				}+/
+			}
+			return str;
+		}
+		e = new Expect(spawnHelper(spawn.children[0]), this.outFiles);
+		if(this.keys.canFind("timeout"))
+			e.timeout = this["timeout"].to!long;
+	}
 }
+
+//pragma(msg, constructHelperSwitch!("test",
+//	"a", { str ~= child.matches[0]; }));
+void constructHelperSwitch(T...)(ParseTree tree, T t){
+	static assert((t.length % 2) == 0,
+					"Need to specify name->function in pairs");
+	foreach(i, arg; t){
+		static if(i % 2 == 0){
+			if(tree.name == t[i]) {
+				// do some checks on t[i+1] to check if its a delegate or string or whatever
+				t[i+1]();
+			}
+		}
+	}
+}
+
 auto getAttributes(ParseTree tree){ //checks if this tree has attributes
 	return tree.children
 		.filter!(child => child.name == "ScriptGrammar.Attribute");
@@ -432,26 +494,26 @@ ScriptGrammar:
 
 	Comment		<: :Spacing* '#' (!eoi !endOfLine .)*
 
-	Spawn		<- :"spawn" :Spacing* ToSpawn
+	Spawn		<- :"spawn" :Spacing+ ToSpawn
 	ToSpawn	<- (~Variable / ~String) :Spacing ('~' :Spacing ToSpawn)*
 
-	Send		<- :"send" :Spacing* ToSend
+	Send		<- :"send" :Spacing+ ToSend
 	ToSend	<- (~Variable / ~String) :Spacing ('~' :Spacing ToSend)*
 
-	Expect		<- :"expect" :Spacing* ToExpect
+	Expect		<- :"expect" :Spacing+ ToExpect
 	ToExpect	<- (~Variable / ~String) :Spacing ('~' :Spacing ToExpect)*
 
-	Set			<- :'set' :Spacing* SetVar :Spacing :'=' Spacing SetVal
+	Set			<- :'set' :Spacing+ SetVar :Spacing :'=' Spacing SetVal
 	SetVar		<- ~VarName
 	SetVal		<- (~Variable / ~String) :Spacing ('~' :Spacing SetVal)*
 
-	Import      <- 'import' :Spacing* ToImport
+	Import      <- 'import' :Spacing+ ToImport
 	ToImport  <- (~Variable / ~String)
 
 	Keyword		<~ ('#' / 'set' / 'expect' / 'spawn' / 'send')
 	KeywordData <~ (!eoi !endOfLine .)+
 
-	Variable    	<- :"$(" VarName :")"
+	Variable    	<- (:"$(" VarName :")")
 	VarName     	<- (!eoi !endOfLine !')' !'(' !'$' !'=' !'~' .)+
 
 	Text			<- (!eoi !endOfLine !'~' .)+
