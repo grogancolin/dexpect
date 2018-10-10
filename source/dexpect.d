@@ -380,7 +380,7 @@ version(Posix){
 		ubyte[toRead] buf;
 		immutable long len = read(pty.fd, buf.ptr, toRead);
 		if(len >= 0){
-			return cast(string)(buf[0..len]);
+			return cast(string)(buf.idup[0..len]);
 		}
 		return "";
 	}
