@@ -41,6 +41,7 @@ import std.algorithm : canFind;
 import std.path : isAbsolute;
 import std.stdio : File, stdout;
 import std.range : isOutputRange;
+version ( Win64 ) import std.utf : toUTF16z;
 
 //alias Expect = ExpectImpl!ExpectSink;
 
@@ -125,6 +126,7 @@ public class ExpectImpl(OutputRange) if(isOutputRange!(OutputRange, string)){
 				this._sink.put("Last %s chars of data: %s", update.length, update.strip);
 				timeLastPrintedMessage = Clock.currTime;
 			}
+
 			foreach(int idx, string toExpect; arr){
 				this.spawn.readNextChunk;
 				// check if we finally have what we want in the output, if so, return
@@ -290,7 +292,14 @@ struct Spawn{
 		}
 		version(Windows){
 			OVERLAPPED ov;
-			ov.Offset = allData.length;
+			version ( Win64 )
+			{
+				ov.Offset = allData.length.to!uint;
+			}
+			else
+			{
+				ov.Offset = allData.length;
+			}
 			if(ReadFileEx(this.outReadPipe, overlappedBuffer.ptr, overlappedBuffer.length, &ov, cast(void*)&readData) == 0){
 				if(GetLastError == 997)
 					throw new ExpectException("readNextChunk - pending io");
@@ -418,8 +427,16 @@ version(Windows){
 			uint written;
 			// convert data into a c string
 			auto cstr = cast(void*)data.toStringz;
-			if(WriteFile(h, cstr, data.length, &written, null) == 0)
-				throw new ExpectException("WriteFile " ~ to!string(GetLastError()));
+			version ( Win64 )
+			{
+				if(WriteFile(h, cstr, data.length.to!uint, &written, null) == 0)
+					throw new ExpectException("WriteFile " ~ to!string(GetLastError()));
+			}
+			else
+			{
+				if(WriteFile(h, cstr, data.length, &written, null) == 0)
+					throw new ExpectException("WriteFile " ~ to!string(GetLastError()));
+			}
 		}
 	}
 
@@ -446,7 +463,6 @@ version(Windows){
 		{
 			HANDLE ReadPipeHandle, WritePipeHandle;
 			DWORD dwError;
-			CHAR[MAX_PATH] PipeNameBuffer;
 
 			if (nSize == 0) {
 				nSize = 4096;
@@ -459,36 +475,79 @@ version(Windows){
 
 			// could use format here, but C function will add \0 like windows wants
 			// so may as well use it
-			sprintf(PipeNameBuffer.ptr,
-				"\\\\.\\Pipe\\DExpectPipe.%08x.%08x".ptr,
-				GetCurrentProcessId(),
-				PipeSerialNumber++
-				);
+			version ( Win64 )
+			{
+				string PipeNameBuffer;
 
-			ReadPipeHandle = CreateNamedPipeA(
-				PipeNameBuffer.ptr,
-				1/*PIPE_ACCESS_INBOUND*/ | dwReadMode,
-				0/*PIPE_TYPE_BYTE*/ | 0/*PIPE_WAIT*/,
-				1,             // Number of pipes
-				nSize,         // Out buffer size
-				nSize,         // In buffer size
-				120 * 1000,    // Timeout in ms
-				lpPipeAttributes
-				);
+				PipeNameBuffer = 
+					format!
+						"\\\\.\\Pipe\\DExpectPipe.%08x.%08x"
+						(
+							GetCurrentProcessId(),
+							PipeSerialNumber++
+						);
+
+				ReadPipeHandle = CreateNamedPipeW(
+					PipeNameBuffer.toUTF16z,
+					1/*PIPE_ACCESS_INBOUND*/ | dwReadMode,
+					0/*PIPE_TYPE_BYTE*/ | 0/*PIPE_WAIT*/,
+					1,             // Number of pipes
+					nSize,         // Out buffer size
+					nSize,         // In buffer size
+					120 * 1000,    // Timeout in ms
+					lpPipeAttributes
+					);
+			}
+			else
+			{
+				CHAR[MAX_PATH] PipeNameBuffer;
+
+				sprintf(PipeNameBuffer.ptr,
+					"\\\\.\\Pipe\\DExpectPipe.%08x.%08x".ptr,
+					GetCurrentProcessId(),
+					PipeSerialNumber++
+					);
+
+				ReadPipeHandle = CreateNamedPipeA(
+					PipeNameBuffer.ptr,
+					1/*PIPE_ACCESS_INBOUND*/ | dwReadMode,
+					0/*PIPE_TYPE_BYTE*/ | 0/*PIPE_WAIT*/,
+					1,             // Number of pipes
+					nSize,         // Out buffer size
+					nSize,         // In buffer size
+					120 * 1000,    // Timeout in ms
+					lpPipeAttributes
+					);
+			}
 
 			if (! ReadPipeHandle) {
 				return FALSE;
 			}
 
-			WritePipeHandle = CreateFileA(
-				PipeNameBuffer.ptr,
-				GENERIC_WRITE,
-				0,                         // No sharing
-				lpPipeAttributes,
-				OPEN_EXISTING,
-				FILE_ATTRIBUTE_NORMAL | dwWriteMode,
-				null                       // Template file
-				);
+			version ( x86_64 )
+			{
+				WritePipeHandle = CreateFileW(
+					PipeNameBuffer.toUTF16z,
+					GENERIC_WRITE,
+					0,                         // No sharing
+					lpPipeAttributes,
+					OPEN_EXISTING,
+					FILE_ATTRIBUTE_NORMAL | dwWriteMode,
+					null                       // Template file
+					);
+			}
+			else
+			{			
+				WritePipeHandle = CreateFileA(
+					PipeNameBuffer.ptr,
+					GENERIC_WRITE,
+					0,                         // No sharing
+					lpPipeAttributes,
+					OPEN_EXISTING,
+					FILE_ATTRIBUTE_NORMAL | dwWriteMode,
+					null                       // Template file
+					);
+			}
 
 			if (INVALID_HANDLE_VALUE == WritePipeHandle) {
 				dwError = GetLastError();
@@ -537,12 +596,21 @@ version(Windows){
 
 		if(commandLine.length > 255)
 			throw new Exception("command line too long");
-		char[256] cmdLine;
-		cmdLine[0 .. commandLine.length] = commandLine[];
-		cmdLine[commandLine.length] = 0;
 
-		if(CreateProcessA(program is null ? null : toStringz(program), cmdLine.ptr, null, null, true, 0/*0x08000000 /* CREATE_NO_WINDOW */, null /* environment */, null, &startupInfo, &pi) == 0)
-			throw new Exception("CreateProcess " ~ to!string(GetLastError()));
+		version ( Win64 )
+		{
+			if(CreateProcessW(program is null ? null : program.toUTF16z, cast( wchar* ) commandLine.toUTF16z, null, null, true, 0/*0x08000000 /* CREATE_NO_WINDOW */, null /* environment */, null, &startupInfo, &pi) == 0)
+				throw new Exception("CreateProcess " ~ to!string(GetLastError()));			
+		}
+		else
+		{
+			char[256] cmdLine;
+			cmdLine[0 .. commandLine.length] = commandLine[];
+			cmdLine[commandLine.length] = 0;
+
+			if(CreateProcessA(program is null ? null : toStringz(program), cmdLine.ptr, null, null, true, 0/*0x08000000 /* CREATE_NO_WINDOW */, null /* environment */, null, &startupInfo, &pi) == 0)
+				throw new Exception("CreateProcess " ~ to!string(GetLastError()));			
+		}
 
 		if(RegisterWaitForSingleObject(&waitHandle, pi.hProcess, &childCallback, cast(void*) GetCurrentThreadId(), INFINITE, 4 /* WT_EXECUTEINWAITTHREAD */ | 8 /* WT_EXECUTEONLYONCE */) == 0)
 			throw new Exception("RegisterWaitForSingleObject");
